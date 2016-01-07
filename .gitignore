@@ -48,3 +48,6 @@ Temporary Items
 
 # Python compiled files
 *.py[cod]
+
+# ignore "test*" files
+test*
