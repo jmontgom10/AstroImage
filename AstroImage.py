@@ -1736,3 +1736,128 @@ class AstroImage(object):
         # Return the graphics objects to the user
         return (fig, axes, axIm)
         
+class Bias(Image):
+    """A subclass of the "Image" class: stores bias images and provides some
+    methods for bias type operations.
+    """
+    
+    def __init__(self, filename = ''):
+        super(Bias, self).__init__(filename)
+    
+    def average(self):
+        return np.mean(self.arr)
+    
+    def master_bias(biasList, clipSigma = 3.0):
+        return AstroImage.stacked_average(biasList, clipSigma = clipSigma)
+
+    def overscan_polynomial(biasList, overscanPos):
+        ## Loop through biasList and build a stacked average of the
+        ## overscanRegion
+        numBias      = len(biasList)
+#        overscanList = biasList.copy()
+        binning      = np.unique([(biasList[i].header['CRDELT1'], 
+                                   biasList[i].header['CRDELT2'])
+                                   for i in range(numBias)])
+        if len(binning) > 1:
+            raise ValueError('Binning is different for each axis')
+        overscanPos1   = overscanPos/binning
+
+        ## Trim the overscan list to contain ONLY the overscan.
+        overscanList = []
+        for i in range(len(biasList)):
+            overscanList.append(biasList[i].copy())
+            overscanList[i].arr = \
+              biasList[i].arr[overscanPos1[0][1]:overscanPos1[1][1], \
+                                  overscanPos1[0][0]:overscanPos1[1][0]]
+        masterOverscan = AstroImage.stacked_average(overscanList)
+
+        ## Average across each row.
+        overscanRowValues = np.mean(masterOverscan, axis = 1)
+        rowInds           = range(len(overscanRowValues))
+
+        ## Compute statistics for a zeroth order polynomial.
+        polyCoeffs = np.polyfit(rowInds, overscanRowValues, 0)
+        polyValues = np.polyval(polyCoeffs, rowInds)
+        chi2_m     = np.sum((overscanRowValues - polyValues)**2)
+
+        ## Loop through polynomial degrees and store Ftest result
+#        alpha  = 0.05   #Use a 5% "random probability" as a cutoff
+        sigma  = 7.0    #Use a 7 sigma requirement for so much data
+        alpha  = (1 - scipy.stats.norm.cdf(sigma))
+        Ftests = []
+        coeffs = []
+        for deg in range(1,10):
+            dof        = len(overscanRowValues) - deg - 1
+            polyCoeffs = np.polyfit(rowInds, overscanRowValues, deg)
+            coeffs.append(polyCoeffs)
+            polyValues = np.polyval(polyCoeffs, rowInds)
+            chi2_m1    = np.sum((overscanRowValues - polyValues)**2)
+#            print('reduced Chi2 = ' + str(chi2_m1/dof))
+            Fchi       = (chi2_m - chi2_m1)/(chi2_m1/dof)
+            prob       = 1 - scipy.stats.f.cdf(Fchi, 1, dof)
+            Ftests.append(prob < alpha)
+            
+            ## Store chi2_m1 in chi2 for use in next iteration
+            #***** NOTE HERE *****
+            # there are so many degrees of freedom (v2 ~ 20000 pixels!)
+            # that Fchi(v1=1, v2) = Fchi(v1=1, v2=Inf), so almost all
+            # polynomials will pass the test (until we get to Fchi < 3.84
+            # for alpha = 0.05). We can decrease alpha (stricter test), or
+            # we can rebin along the column
+            chi2_m     = chi2_m1
+        
+        
+        ## Find the LOWEST ORDER FAILED F-test and return the degree
+        ## of the best fitting polynomial
+        bestDegree = np.min(np.where([not test for test in Ftests]))
+        
+#        # Plot all of the fits...
+#        for plotNum in range(len(coeffs)):
+#            cf = coeffs[plotNum]
+#            plt.subplot(3, 3, plotNum + 1)
+#            plt.plot(rowInds, overscanRowValues)
+#            polyValues = np.polyval(cf, rowInds)
+#            plt.plot(rowInds, polyValues, linewidth = 4, color = 'r')
+#            plt.text(1250, 1029, str(Ftests[plotNum]))
+#        plt.show()
+        return bestDegree
+            
+#    @property
+#    def read_noise(self):
+#        return np.std(self.arr)
+
+class Flat(AstroImage):
+    """A subclass of the "Image" class: stores flat frames and provides some
+    methods for flat type operations.
+    """
+    
+    def __init__(self, filename = ''):
+        super(Flat, self).__init__(filename)
+    
+    def master_flat(flatList, clipSigma = 3.0):
+        return AstroImage.stacked_average(flatList, clipSigma = clipSigma)
+
+class Dark(AstroImage):
+    """A subclass of the "Image" class: stores dark frames and provides some
+    methods for dark type operations.
+    """
+    
+    def __init(self, filename = ''):
+        super(Dark, self).__init__(filename)
+    
+    def dark_time(darkList):
+        
+        # Build a list of all the exposure times
+        expTimeList = [dark.header['EXPTIME'] for dark in darkList]
+
+        # Check if all the exposure times are the same...
+        expTimes = np.unique(expTimeList)
+        if expTimes.size > 1:
+            raise ValueError('More than one exposure time found in list')
+        else:
+            return expTimes[0]
+    
+    def dark_current(darkList, clipSigma = 3.0):
+        avgImg   = AstroImage.stacked_average(darkList, clipSigma = clipSigma)
+        darkTime = Dark.dark_time(darkList)
+        return avgImg/darkTime
