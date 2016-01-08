@@ -253,7 +253,7 @@ class AstroImage(object):
 
     def copy(self):
         # Define a fresh image to copy all the properties
-        output = Image()
+        output = AstroImage()
         if hasattr(self, 'arr'):
             output.arr = self.arr.copy()
         if hasattr(self, 'binning'):
@@ -286,6 +286,49 @@ class AstroImage(object):
 
         # Write file to disk
         hdulist.writeto(filename, clobber=True)
+
+    def overscan_correction(self, overscanPos, sciencePos,
+                            overscanPolyOrder = 3):
+        """Fits a polynomial to the overscan column and subtracts and extended
+        polynomial from the entire image array.
+        Note: The prescan region is not an accurate representation of the bias,
+        so it is completely ignored.
+        """
+        # Check the binning
+#        binning = np.unique((self.header['CRDELT1'], self.header['CRDELT2']))
+
+        # Compute the rebinned locations of the pre-scan and post-scan regions.
+        overscanPos1 = overscanPos/self.binning
+        sciencePos1  = sciencePos/self.binning
+#        overscanRegion = self.arr[overscanPos1[0][1]:overscanPos1[1][1], \
+#                                  overscanPos1[0][0]:overscanPos1[1][0]]
+
+        # Grab the pre-scan and post-scan regions of the array
+        overscanRegion  = self.arr[:, overscanPos1[0][0]:overscanPos1[1][0]]
+
+        # Make sure I know what is "PRESCAN" (right?) and "POSTSCAN" (left?)
+        # and which one corresponds to the "overscan region"
+
+        # Grab the shape of the array for future use
+        ny, nx = self.arr.shape
+
+        # Fit the correct order polynomial to the overscan columns
+        overscanRowValues  = np.mean(overscanRegion, axis = 1)
+        rowInds            = range(ny)
+        overscanPolyCoeffs = np.polyfit(rowInds, overscanRowValues, overscanPolyOrder)
+        overscanPolyValues = np.polyval(overscanPolyCoeffs, rowInds)
+
+        # Expand the overscan along the horizontal axis and subtract.
+        overscan  = (np.tile(overscanPolyValues, (self.arr.shape[1],1)).
+                     astype(np.float32)).T
+        self.arr  = self.arr.astype(np.float32)
+        self.arr -= overscan
+
+        # Trim the array to include only the science data
+        self.arr  = self.arr[sciencePos1[0][1]:sciencePos1[1][1],
+                             sciencePos1[0][0]:sciencePos1[1][0]]
+
+
 
     def scale(self, copy=False):
         """Scales the data in the arr attribute using the BSCALE and BZERO
@@ -1740,7 +1783,7 @@ class Bias(AstroImage):
     """A subclass of the "Image" class: stores bias images and provides some
     methods for bias type operations.
     """
-    
+
     def __init__(self, filename = ''):
         super(Bias, self).__init__(filename)
 

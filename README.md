@@ -19,7 +19,8 @@ There are also "magic methods" defined for the AstroImage class. These methods
 allow basic arithmetic operations between images. For example if img1 and img2
 are AstroImage instances, then the code
 
-```img3 = img1 * img2
+```
+img3 = img1 * img2
 ```
 
 computes the product of the image arrays from img1 and img2 and stores that
@@ -28,12 +29,14 @@ array in a new AstroImage object assigned to the variable name "img3".
 The name of the base class is "AstroImage", and the subclasses are "Bias",
 "Dark", and "Flat". The base class can be imported using
 
-```from AstroImage import AstroImage
+```
+from AstroImage import AstroImage
 ```
 
 and FITS images can be read in with the following
 
-```img1 = AstroImage('/path/to/FITS/file/img1.fits')
+```
+img1 = AstroImage('/path/to/FITS/file/img1.fits')
 ```
 
 # Dependencies and Setup
@@ -56,13 +59,15 @@ separately.
 
 Using pip, you can install this package via
 
-```pip install wcsaxes
+```
+pip install wcsaxes
 ```
 
 If you have Anaconda installed, then the process is a bit different. Use the
 following code
 
-```conda install --channel https://conda.anaconda.org/astropy wcsaxes
+```
+conda install --channel https://conda.anaconda.org/astropy wcsaxes
 ```
 
 ## photutils
@@ -75,11 +80,13 @@ following code
 
 Using pip, you can install this package via
 
-```pip install --no-deps photutils
+```
+pip install --no-deps photutils
 ```
 
 If you have Anaconda installed, then the process is a bit different. Use the
 following code
 
-```conda install --channel https://conda.anaconda.org/astropy photutils
+```
+conda install --channel https://conda.anaconda.org/astropy photutils
 ```
