@@ -1,5 +1,7 @@
 import pdb
 import os
+import sys
+import subprocess
 import psutil
 import time
 import numpy as np
@@ -1546,6 +1548,24 @@ class AstroImage(object):
 
 
         if doAstrometry:
+            # Test what kind of system is running
+            if 'win' in sys.platform:
+                # If running in Windows,
+                # then define the "bash --login -c (cd ...)" command
+                # using Cygwin's "cygpath" to convert to POSIX format
+                proc = subprocess.Popen(['cygpath', os.getcwd()],
+                                        stdout=subprocess.PIPE,
+                                        universal_newlines=True)
+                curDir = ((proc.communicate())[0]).rstrip()
+                proc.terminate()
+                prefix = 'bash --login -c ("cd ' + curDir + '; '
+                suffix = '")'
+            else:
+                # If running a *nix system,
+                # then define null prefix/suffix strings
+                prefix = ''
+                suffix = ''
+
             # Setup the basic input/output command options
             outputCmd    = ' --out tmp'
             noPlotsCmd   = ' --no-plots'
@@ -1592,7 +1612,10 @@ class AstroImage(object):
                            ' ' + self.filename
 
             # Run the command in the terminal
-            os.system(command)
+            astroProc = subprocess.Popen(prefix + command +suffix)
+            astroProc.wait()
+            astroProc.terminate()
+            # os.system(prefix + command + suffix)
 
             # Construct the path to the newly created WCS file
             filePathList = self.filename.split(os.path.sep)
@@ -1604,9 +1627,9 @@ class AstroImage(object):
             # Read in the tmp.wcs file and create a WCS object
             if os.path.isfile(wcsPath):
                 HDUlist = fits.open(wcsPath)
-                pdb.set_trace()
                 HDUlist[0].header['NAXIS'] = self.header['NAXIS']
                 wcsObj = WCS(HDUlist[0].header)
+                HDUlist.close()
 
                 # Build a quick header from the WCS object
                 wcsHead = wcsObj.to_header()
@@ -1617,7 +1640,12 @@ class AstroImage(object):
 
                 # Delete the WCS file, so it doesn't get used for
                 # a different file.
-                os.system('rm ' + wcsPath)
+                rmProc = subprocess.Popen('rm ' + wcsPath)
+                rmProc.wait()
+                rmProc.terminate()
+                rmProc = subprocess.Popen('rm none')
+                rmProc.wait()
+                rmProc.terminate()
 
                 # If everything has worked, then return a True success value
                 return True
