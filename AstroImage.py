@@ -79,11 +79,13 @@ class AstroImage(object):
                 self.dtype    = dataType
                 HDUlist.close()
 
+            # This the "UserWarning" error from Astropy in Windows
+            # should be ignored until further notice
+            except UserWarning:
+                pass
+
             except:
                 print('Possible error when loading file \n{0}'.format(filename))
-#                raise ValueError
-
-#        def read_file(self, filename):
 
     def __pos__(self):
         # Implements behavior for unary positive (e.g. +some_object)
@@ -1558,13 +1560,25 @@ class AstroImage(object):
                                         universal_newlines=True)
                 curDir = ((proc.communicate())[0]).rstrip()
                 proc.terminate()
+
+                # Convert filename to Cygwin compatible format
+                proc = subprocess.Popen(['cygpath', self.filename],
+                                        stdout=subprocess.PIPE,
+                                        universal_newlines=True)
+                inFile = ((proc.communicate())[0]).rstrip()
+                proc.terminate()
                 prefix = 'bash --login -c ("cd ' + curDir + '; '
                 suffix = '")'
+                delCmd = 'del '
+                shellCmd = True
             else:
                 # If running a *nix system,
                 # then define null prefix/suffix strings
+                inFile = self.filename
                 prefix = ''
                 suffix = ''
+                delCmd = 'rm '
+                shellCmd = False
 
             # Setup the basic input/output command options
             outputCmd    = ' --out tmp'
@@ -1609,7 +1623,7 @@ class AstroImage(object):
                            radiusCmd + \
                            imageOptions + \
                            noOutFiles + \
-                           ' ' + self.filename
+                           ' ' + inFile
 
             # Run the command in the terminal
             astroProc = subprocess.Popen(prefix + command +suffix)
@@ -1638,12 +1652,12 @@ class AstroImage(object):
                 for key in wcsHead.keys():
                     self.header[key] = wcsHead[key]
 
-                # Delete the WCS file, so it doesn't get used for
-                # a different file.
-                rmProc = subprocess.Popen('rm ' + wcsPath)
+                # Cleanup the none and WCS file,
+                rmProc = subprocess.Popen(delCmd + wcsPath, shell=shellCmd)
                 rmProc.wait()
                 rmProc.terminate()
-                rmProc = subprocess.Popen('rm none')
+                noneFile = os.path.join(os.getcwd(), 'none')
+                rmProc = subprocess.Popen(delCmd + noneFile, shell=shellCmd)
                 rmProc.wait()
                 rmProc.terminate()
 
