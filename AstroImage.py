@@ -483,9 +483,12 @@ class AstroImage(object):
                 outHead['CD2_2'] = thisCD[1,1]/yratio
             elif wcs.wcs.has_pc():
                 # Apply updates to CDELT valus
-                outHead['CDELT1'] = xratio * outHead['CDELT1']
-                outHead['CDELT2'] = yratio * outHead['CDELT2']
-
+#                pdb.set_trace()
+#                outHead['CDELT1'] = xratio * outHead['CDELT1']
+#                outHead['CDELT2'] = yratio * outHead['CDELT2']
+                outHead['CDELT1'] = outHead['CDELT1']/xratio
+                outHead['CDELT2'] = outHead['CDELT2']/yratio
+                
                 # Adjust the PC matrix if non-equal plate scales.
                 # See equation 187 in Calabretta & Greisen (2002)
                 if aspect != 1.0:
