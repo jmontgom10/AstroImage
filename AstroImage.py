@@ -488,7 +488,7 @@ class AstroImage(object):
 #                outHead['CDELT2'] = yratio * outHead['CDELT2']
                 outHead['CDELT1'] = outHead['CDELT1']/xratio
                 outHead['CDELT2'] = outHead['CDELT2']/yratio
-                
+
                 # Adjust the PC matrix if non-equal plate scales.
                 # See equation 187 in Calabretta & Greisen (2002)
                 if aspect != 1.0:
@@ -1199,7 +1199,7 @@ class AstroImage(object):
             corr1  = corr[btCorr:tpCorr, lfCorr:rtCorr]
 
             # Get the gradient of the cross-correlation function
-            tmp     = Image()
+            tmp     = AstroImage()
             tmp.arr = corr1
             Gx, Gy  = tmp.gradient()
             grad    = np.sqrt(Gx**2 + Gy**2)
