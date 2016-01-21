@@ -931,6 +931,44 @@ class AstroImage(object):
         self.header['CRPIX1'] = self.header['CRPIX1'] + dx
         self.header['CRPIX2'] = self.header['CRPIX2'] + dy
 
+    def in_image(self, coords, edge=0):
+        """A method to test which (RA, Dec) coordinates lie within the image.
+
+        returns:
+        Array of boolean values. The array will contain "True" for those
+         coordinates which lie within the image footprint and False for those
+         coordinates which lie outside the image footprint.
+
+        parameters:
+        coords -- the (RA, Dec) pairs to check (must be an instance of the
+                  astropy.coordinates.SkyCoord class)
+        edge   -- Specifies the amount of image to ignore (arcsec). If the
+                  specified point is within the image but is less than "edge"
+                  arcsec from the edge of the image, then a False value is
+                  returned.
+        """
+        # Grab the WCS from the header
+        thisWCS = WCS(self.header)
+
+        # Transform coordinates to pixel positions
+        x, y = coords.to_pixel(thisWCS)
+
+        # Replace NANs with reasonable but sure to fail values
+        badX = np.logical_not(np.isfinite(x))
+        badY = np.logical_not(np.isfinite(y))
+        badInd = np.where(np.logical_or(badX, badY))
+        x[badInd] = -1
+        y[badInd] = -1
+
+        # Grab the array size
+        ny, nx = self.arr.shape
+
+        # Check which coordinates fall within the image
+        xGood = np.logical_and(x > edge, x < (nx - edge - 1))
+        yGood = np.logical_and(y > edge, y < (ny - edge - 1))
+        allGood = np.logical_and(xGood, yGood)
+
+        return allGood
 
     def align(self, img, fractionalShift=False, mode='wcs',
               offsets=False):
