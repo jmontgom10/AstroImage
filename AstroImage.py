@@ -62,17 +62,17 @@ class AstroImage(object):
                 # If binning has been specified, then set it...
                 try:
                     # Check that binning makes sense and store it if it does
-                    uniqBins = np.unique((self.header['CRDELT1'],
-                                         self.header['CRDELT2']))
-                    if len(uniqBins) > 1:
-                        raise ValueError('Binning is different for each axis')
-                    else:
-                        self.binning  = int(uniqBins[0])
+                    self.binning = tuple([int(di) for di in self.header['CRDELT*'].values()])
                 except:
                     # No binning found, so call this (1x1) binning.
-                    self.binning = int(1)
-                    self.header['CRDELT1'] = self.binning
-                    self.header['CRDELT2'] = self.binning
+                    self.binning = tuple(np.ones(avgImg.arr.ndim).astype(int))
+                    for i, di in enumerate(self.binning):
+                        self.header['CRDELT'+str(i)] = di
+
+                # Loop through the HDUlist and check for a 'SIGMA' HDU
+                for HDU in HDUlist:
+                    if HDU.name == 'SIGMA':
+                        self.sigma = HDU.data
 
                 # Set the file type properties
                 self.filename = filename
@@ -280,16 +280,30 @@ class AstroImage(object):
             filename = self.filename
 
         # Build a new HDU object to store the data
-        hdu = fits.PrimaryHDU(data = self.arr,
-                            header = self.header,
-                            do_not_scale_image_data=False)
+        arrHDU = fits.PrimaryHDU(data = self.arr,
+                                 header = self.header,
+                                 do_not_scale_image_data=True)
 
         # Replace the original header (since some cards may have been stripped)
-        hdu.header = self.header
-        hdulist = fits.HDUList([hdu])
+        arrHDU.header = self.header
+
+        # If there is a sigma attribute,
+        # then include it in the list of HDUs
+        try:
+            # Bulid a secondary HDU
+            sigmaHDU = fits.ImageHDU(data = self.sigma,
+                                     name = 'sigma',
+                                     header = self.header,
+                                     do_not_scale_image_data=True)
+            HDUs = [arrHDU, sigmaHDU]
+        except:
+            HDUs = [arrHDU]
+
+        # Build the final output HDUlist
+        HDUlist = fits.HDUList(HDUs)
 
         # Write file to disk
-        hdulist.writeto(filename, clobber=True)
+        HDUlist.writeto(filename, clobber=True)
 
     def overscan_correction(self, overscanPos, sciencePos,
                             overscanPolyOrder = 3):
@@ -1508,7 +1522,8 @@ class AstroImage(object):
               .format(numImg, numSections, numRows))
 
             # Initalize an array to store the final averaged image
-            finalImg = np.zeros((ny,nx))
+            meanImg  = np.zeros((ny,nx))
+            sigmaImg = np.zeros((ny,nx))
 
             # Compute the stacked average of each section
             #
@@ -1534,7 +1549,7 @@ class AstroImage(object):
                 stack.mask  = NaNsOrInfs
 
                 # Now that the bad values have been saved,
-                # replace them with "good" values
+                # replace them with signal "bad-data" values
                 stack.data[np.where(NaNsOrInfs)] = -1*(10**6)
 
                 print('\nAveraging rows {0[0]:g} through {0[1]:g}'.format(thisRows))
@@ -1568,11 +1583,47 @@ class AstroImage(object):
                     scale     += 0.2*nextScale
                     if np.sum(nextScale) == 0: break
 
-                # Now that this section has been averaged, store it in output.
-                finalImg[thisRows[0]:thisRows[1],:] = np.mean(stack, axis = 0)
-            return finalImg
+                # Compute the final mean image.
+                meanImg[thisRows[0]:thisRows[1],:] = np.mean(stack, axis = 0)
+
+                # Compute the uncertainty in the mean
+                # Make sure that we don't divide by sqrt(-1)
+                singleSample = np.where(numPoints <= 1)
+                numPoints[singleSample] = 1
+
+                # Compute the uncertainty in the mean
+                tmpSigma = np.std(stack, axis = 0)/np.sqrt(numPoints - 1)
+
+                # Be honest about singly sampled points
+                tmpSigma[singleSample] = np.NaN
+
+                # Place the uncertainty in the sigmaImg variable
+                sigmaImg[thisRows[0]:thisRows[1],:] = tmpSigma
+
+            # Get ready to return an AstroImage object to the user
+            outImg = AstroImage()
+            outImg.arr = meanImg
+            outImg.sigma = sigmaImg
+            outImg.header = imgList[0].header
+
+            # Now that an average image has been computed,
+            # Clear out the old astrometry
+            if 'WCSAXES' in outImg.header.keys():
+                del outImg.header['WCSAXES']
+                del outImg.header['PC*']
+                del outImg.header['CDELT*']
+                del outImg.header['CUNIT*']
+                del outImg.header['*POLE']
+                outImg.header['CRPIX*'] = 1.0
+                outImg.header['CRVAL*'] = 1.0
+                outImg.header['CTYPE*'] = 'Linear Binned ADC Pixels'
+                outImg.header['NAXIS1'] = outImg.arr.shape[1]
+                outImg.header['NAXIS2'] = outImg.arr.shape[0]
+
+            # Finally return the final result
+            return outImg
         else:
-            return imgList[0].arr
+            return imgList[0]
 
     def astrometry(self, override = False):
         """A method to invoke astrometry.net
@@ -1763,7 +1814,7 @@ class AstroImage(object):
         image is displayed.
 
         Additional keyword arguments include
-        scale -- ['linear' | 'log']
+        scale -- ['linear' | 'log' | 'asinh']
                  allows the user to specify if if the image stretch should be
                  linear or log space
         """
