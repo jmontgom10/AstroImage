@@ -1,6 +1,7 @@
 import pdb
 import os
 import sys
+import copy
 import subprocess
 import psutil
 import time
@@ -256,22 +257,23 @@ class AstroImage(object):
             return self.__rdiv__(other)
 
     def copy(self):
-        # Define a fresh image to copy all the properties
-        output = AstroImage()
-        if hasattr(self, 'arr'):
-            output.arr = self.arr.copy()
-        if hasattr(self, 'binning'):
-            output.binning = self.binning
-        if hasattr(self, 'header'):
-            output.header = self.header.copy()
-        if hasattr(self, 'filename'):
-            output.filename = self.filename
-
-        # I should use "setattr('arr')" or something like that
-        # to make sure that dtype is defined as soon as "arr" is defined
-        if hasattr(self, 'dtype'):
-            output.dtype = self.dtype
-
+        output = copy.deepcopy(self)
+        # # Define a fresh image to copy all the properties
+        # output = AstroImage()
+        # if hasattr(self, 'arr'):
+        #     output.arr = self.arr.copy()
+        # if hasattr(self, 'binning'):
+        #     output.binning = self.binning
+        # if hasattr(self, 'header'):
+        #     output.header = self.header.copy()
+        # if hasattr(self, 'filename'):
+        #     output.filename = self.filename
+        #
+        # # I should use "setattr('arr')" or something like that
+        # # to make sure that dtype is defined as soon as "arr" is defined
+        # if hasattr(self, 'dtype'):
+        #     output.dtype = self.dtype
+        #
         return output
 
     def write(self, filename = ''):
