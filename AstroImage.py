@@ -1,14 +1,9 @@
 import pdb
 import os
-import sys
 import copy
-import subprocess
-import psutil
-import time
 import numpy as np
 from scipy import signal
 from scipy import ndimage
-from scipy import interpolate
 
 #import scipy.interpolate
 #import scipy.ndimage
@@ -19,12 +14,20 @@ from astropy.modeling import models, fitting
 from astropy.stats import sigma_clipped_stats
 from astropy.io import fits
 
+# TODO
+import warnings
+# Catch the "RuntimeWarning" in the magic methods
+# Catch the "UserWarning" in the init procedure
+
 #from astropy.wcs import WCS
 from wcsaxes import WCS
 from astropy.coordinates import SkyCoord
 from astropy.wcs.utils import pixel_to_skycoord, skycoord_to_pixel
 from astropy.wcs.utils import proj_plane_pixel_scales
 from photutils import daofind
+
+# Finally import the associated "image_tools" python module
+import image_tools
 
 class AstroImage(object):
     """An object which stores an image array and header and provides a
@@ -66,7 +69,7 @@ class AstroImage(object):
                     self.binning = tuple([int(di) for di in self.header['CRDELT*'].values()])
                 except:
                     # No binning found, so call this (1x1) binning.
-                    self.binning = tuple(np.ones(avgImg.arr.ndim).astype(int))
+                    self.binning = tuple(np.ones(self.arr.ndim).astype(int))
                     for i, di in enumerate(self.binning):
                         self.header['CRDELT'+str(i)] = di
 
@@ -90,15 +93,27 @@ class AstroImage(object):
 
     def __pos__(self):
         # Implements behavior for unary positive (e.g. +some_object)
-        print('not yet implemented')
+        outImg = self.copy()
+        tmpArr = self.arr.copy()
+        outImg.arr = +1*tmpArr
+
+        return outImg
 
     def __neg__(self):
         # Implements behavior for negation (e.g. -some_object)
-        print('not yet implemented')
+        outImg = self.copy()
+        tmpArr = self.arr.copy()
+        outImg.arr = -1*tmpArr
+
+        return outImg
 
     def __abs__(self):
         # Implements behavior for the built in abs() function.
-        print('not yet implemented')
+        outImg = self.copy()
+        tmpArr = self.arr.copy()
+        outImg.arr = abs(tmpArr)
+
+        return outImg
 
     def __add__(self, other):
         # Implements addition.
@@ -113,12 +128,27 @@ class AstroImage(object):
             if shape1 == shape2:
                 output     = self.copy()
                 output.arr = self.arr + other.arr
+
+                # Attempt to propagate errors
+                # Check which images have sigma arrays
+                selfSig  = hasattr(self, 'sigma')
+                otherSig = hasattr(other, 'sigma')
+                # Either add in quadrature,
+                # or just give the existing sigma to the output
+                if selfSig and otherSig:
+                    output.sigma = np.sqrt(self.sigma**2 + other.sigma**2)
+                elif selfSig and not otherSig:
+                    output.sigma = self.sigma
+                elif not selfSig and otherSig:
+                    output.sigma = other.sigma
             else:
                 print('Cannot add images with different shapes')
                 return None
+
         elif oneIsInt or oneIsFloat:
             output     = self.copy()
             output.arr = self.arr + other
+
         else:
             print('Attempting to add image and something weird...')
             return None
@@ -149,6 +179,20 @@ class AstroImage(object):
             else:
                 print('Cannot subtract images with different shapes')
                 return None
+
+            # Attempt to propagate errors
+            # Check which images have sigma arrays
+            selfSig  = hasattr(self, 'sigma')
+            otherSig = hasattr(other, 'sigma')
+            # Either add in quadrature,
+            # or just give the existing sigma to the output
+            if selfSig and otherSig:
+                output.sigma = np.sqrt(self.sigma**2 + other.sigma**2)
+            elif selfSig and not otherSig:
+                output.sigma = self.sigma
+            elif not selfSig and otherSig:
+                output.sigma = other.sigma
+
         elif oneIsInt or oneIsFloat:
             output     = self.copy()
             output.arr = self.arr - other
@@ -181,13 +225,32 @@ class AstroImage(object):
                 output     = self.copy()
                 output.arr = self.arr * other.arr
             else:
-                print('Cannot subtract images with different shapes')
+                print('Cannot multiply images with different shapes')
                 return None
+
+            # Attempt to propagate errors
+            # Check which images have sigma arrays
+            selfSig  = hasattr(self, 'sigma')
+            otherSig = hasattr(other, 'sigma')
+            # Either add in quadrature,
+            # or just give the existing sigma to the output
+            if selfSig and otherSig:
+                output.sigma = np.sqrt((other.arr*self.sigma)**2 +
+                                       (self.arr*other.sigma)**2)
+            elif selfSig and not otherSig:
+                output.sigma = self.sigma
+            elif not selfSig and otherSig:
+                output.sigma = other.sigma
+
         elif oneIsInt or oneIsFloat:
             output     = self.copy()
             output.arr = self.arr * other
+
+            if hasattr(self, 'sigma'):
+                output.sigma = np.abs(output.sigma * other)
         else:
-            print('Attempting to subtract image and something weird...')
+            print('Attempting to multiply image by something weird...')
+            pdb.set_trace()
             return None
 
         # Retun the multiplied image
@@ -207,6 +270,10 @@ class AstroImage(object):
         bothAreImages = isinstance(other, self.__class__)
         oneIsInt      = isinstance(other, int)
         oneIsFloat    = isinstance(other, float)
+        oneIsArray    = isinstance(other, np.ndarray)
+
+        # TODO
+        # I should include the possibility of operating with numpy array
 
         if bothAreImages:
             # Check that image shapes make sense
@@ -214,15 +281,57 @@ class AstroImage(object):
             shape2     = other.arr.shape
             if shape1 == shape2:
                 output     = self.copy()
+                
+                # Catch division by zero
+                other0Inds = np.where(other.arr == 0)
+                if len(other0Inds[0]) > 0:
+                    other0s = other.arr[other0Inds]
+                    other.arr[other0Inds] = 1.0
+
+                # Do the division
                 output.arr = self.arr / other.arr
+                
             else:
-                print('Cannot subtract images with different shapes')
+                print('Cannot divide images with different shapes')
                 return None
+
+            # Attempt to propagate errors
+            # Check which images have sigma arrays
+            selfSig  = hasattr(self, 'sigma')
+            otherSig = hasattr(other, 'sigma')
+            # Either add in quadrature,
+            # or just give the existing sigma to the output
+            if selfSig and otherSig:
+                # Catch division by zero
+                self0Inds = np.where(self.arr == 0)
+                if len(self0Inds) > 0:
+                    self0s = self.arr[self0Inds]
+                    self.arr[self0Inds] = 1.0
+                
+                output.sigma = np.abs(output.arr *
+                               np.sqrt((self.sigma/self.arr)**2 +
+                                       (other.sigma/other.arr)**2))
+            elif selfSig and not otherSig:
+                output.sigma = self.sigma
+            elif not selfSig and otherSig:
+                output.sigma = other.sigma
+
+            # Replace zeros
+            if len(self0Inds[0]) > 0:
+                self.arr[self0Inds] = self0s
+            if len(other0Inds[0]) > 0:
+                other.arr[other0Inds] = other0s
+                output.arr[other0Inds] = np.nan
+
         elif oneIsInt or oneIsFloat:
             output     = self.copy()
             output.arr = self.arr / other
+
+            if hasattr(self, 'sigma'):
+                output.sigma = self.sigma / other
+
         else:
-            print('Attempting to subtract image and something weird...')
+            print('Attempting to divide image by something weird...')
             return None
 
         # Return the divided image
@@ -235,7 +344,7 @@ class AstroImage(object):
             output.arr = np.zeros(self.arr.shape)
             return output
         else:
-            output = Image()
+            output = self.copy()
             output.arr = np.ones(self.arr.shape)
             output = output.__mul__(other)
             output = output.__div__(self)
@@ -256,24 +365,242 @@ class AstroImage(object):
         else:
             return self.__rdiv__(other)
 
+    def __mod__(self, other):
+        # Compute the mod of two images or an image and a number
+        bothAreImages = isinstance(other, self.__class__)
+        oneIsInt      = isinstance(other, int)
+        oneIsFloat    = isinstance(other, float)
+
+        if bothAreImages:
+            shape1 = self.arr.shape
+            shape2 = other.arr.shape
+            if shape1 == shape2:
+                output     = self.copy()
+                output.arr = self.arr % other.arr
+            else:
+                print('Cannot subtract images with different shapes')
+                return None
+        elif oneIsInt or oneIsFloat:
+            output = self.copy()
+            output.arr = self.arr % other
+
+        # Return the modulated image to the user
+        return output
+
+
+    def __pow__(self, other):
+        # Implements raising the image to some arbitrary power
+        bothAreImages = isinstance(other, self.__class__)
+        oneIsInt      = isinstance(other, int)
+        oneIsFloat    = isinstance(other, float)
+
+        if bothAreImages:
+            # Check that image shapes make sense
+            shape1     = self.arr.shape
+            shape2     = other.arr.shape
+            if shape1 == shape2:
+                output     = self.copy()
+                output.arr = (self.arr)**(other.arr)
+            else:
+                print('Cannot subtract images with different shapes')
+                return None
+
+            # Attempt to propagate errors
+            # Check which images have sigma arrays
+            selfSig  = hasattr(self, 'sigma')
+            otherSig = hasattr(other, 'sigma')
+            # Either add in quadrature,
+            # or just give the existing sigma to the output
+            if selfSig and otherSig:
+                output.sigma = np.abs(output.arr) * np.sqrt(
+                    (other.arr/self.arr*self.sigma)**2 +
+                    (np.log(self.arr)*other.sigma)**2)
+            elif selfSig and not otherSig:
+                # The line below explodes when self.arr == 0
+                # output.sigma = np.abs(output.arr*other.arr*self.sigma/self.arr)
+                output.sigma = np.abs((self.arr**(other.arr - 1.0))*self.sigma)
+            elif not selfSig and otherSig:
+                print('const ** AstroImage not yet defined... not sure how?')
+
+        elif oneIsInt or oneIsFloat:
+            output = self.copy()
+            output.arr = self.arr**other
+
+            # propagate errors asuming ints and floats have no errors
+            if hasattr(self, 'sigma'):
+                # The line below explodes when self.arr == 0
+                # output.sigma = np.abs(output.arr*other*self.sigma/self.arr)
+                output.sigma = np.abs((self.arr**(other - 1.0))*self.sigma)
+        else:
+            print('Unexpected value in raising image to a power')
+
+        # Finall return the exponentiated image
+        return output
+
+    ##################################
+    ### END OF MAGIC METHODS       ###
+    ### BEGIN OTHER COMMON METHODS ###
+    ##################################
+
+    def sin(self):
+        '''A simple method for computing the sine of the image and propagating
+        its uncertainty (if a sigma array has been defined)
+        '''
+        outImg = self.copy()
+        outImg.arr = np.sin(self.arr)
+
+        if hasattr(self, 'sigma'):
+            outImg.sigma = np.abs(np.cos(self.arr)*self.sigma)
+
+        return outImg
+
+    def arcsin(self):
+        '''A simple method for computing the arcsin of the image and
+        propagating its uncertainty (if a sigma array has been defined)
+        '''
+        outImg = self.copy()
+        outImg.arr = np.arcsin(self.arr)
+
+        if hasattr(self, 'sigma'):
+            outImg.sigma = np.abs(self.sigma/(np.sqrt(1.0 - self.arr)))
+
+        return outImg
+
+    def cos(self):
+        '''A simple method for computing the cosine of the image and propagating
+        its uncertainty (if a sigma array has been defined)
+        '''
+        outImg = self.copy()
+        outImg.arr = np.cos(self.arr)
+
+        if hasattr(self, 'sigma'):
+            outImg.sigma = np.abs(np.sin(self.arr)*self.sigma)
+
+        return outImg
+
+    def arccos(self):
+        '''A simple method for computing the arccos of the image and
+        propagating its uncertainty (if a sigma array has been defined)
+        '''
+        outImg = self.copy()
+        outImg.arr = np.arccos(self.arr)
+
+        if hasattr(self, 'sigma'):
+            outImg.sigma = np.abs(self.sigma/(np.sqrt(1.0 - self.arr)))
+
+        return outImg
+
+    def tan(self):
+        '''A simple method for computing the tangent of the image and
+        propagating its uncertainty (if a sigma array has been defined)
+        '''
+        outImg = self.copy()
+        outImg.arr = np.tan(self.arr)
+
+        if hasattr(self, 'sigma'):
+            outImg.sigma = np.abs(self.sigma*(np.cos(self.arr)**(-2)))
+
+        return outImg
+
+    def arctan(self):
+        '''A simple method for computing the arctan of the image and
+        propagating its uncertainty (if a sigma array has been defined)
+        '''
+        outImg = self.copy()
+        outImg.arr = np.arctan(self.arr)
+
+        if hasattr(self, 'sigma'):
+            outImg.sigma = np.abs(self.sigma/(1.0 - self.arr))
+
+        return outImg
+
+    def arctan2(self, x):
+        '''A simple method for computing the unambiguous arctan of the image
+        and propagating its uncertainty (if a sigma array has been defined).
+        The "self" instance is treated as the y value. Another image, array, or
+        scalar value must be passed as an argument to the method. This will be
+        treated as the x value.
+        '''
+        # Check what type of variable has been passed as the x argument.
+        bothAreImages = isinstance(x, self.__class__)
+        oneIsInt      = isinstance(x, int)
+        oneIsFloat    = isinstance(x, float)
+        if bothAreImages:
+            # Check that image shapes make sense
+            shape1     = self.arr.shape
+            shape2     = x.arr.shape
+            if shape1 == shape2:
+                outImg     = self.copy()
+                outImg.arr = np.arctan2(self.arr, x.arr)
+
+                # Perform error propagation
+                selfSig = hasattr(self, 'sigma')
+                xSig    = hasattr(x, 'sigma')
+                if selfSig and xSig:
+                    outImg.sigma = (np.sqrt((self.arr*x.sigma)**2 +
+                                            (x.arr*self.sigma)**2) /
+                                    (x.arr**2 + self.arr**2))
+                elif selfSig and not xSig:
+                    outImg.sigma = ((x.arr*self.sigma) /
+                                    (x.arr**2 + self.arr**2))
+                elif not selfSig and xSig:
+                    outImg.sigma = ((self.arr*x.sigma) /
+                                    (x.arr**2 + self.arr**2))
+
+            else:
+                print('Cannot subtract images with different shapes')
+                return None
+
+        elif oneIsInt or oneIsFloat:
+            outImg     = self.copy()
+            outImg.arr = np.arctan2(self.arr, x)
+
+            # Perform error propagation
+            if hasattr(self, 'sigma'):
+                outImg.sigma = ((x.arr*self.sigma) /
+                                (x.arr**2 + self.arr**2))
+        else:
+            print('Attempting to arctan with something weird')
+            return None
+
+        return outImg
+
+    def sqrt(self):
+        '''A simple method for computing the square root of the image and
+        propagating its uncertainty (if a sigma array has been defined)
+        '''
+
+        return self**(0.5)
+
+    def rad2deg(self):
+        '''A simple method for converting the image array values from radians
+        to degrees.
+        '''
+
+        outImg = self.copy()
+        outImg.arr = np.rad2deg(self.arr)
+
+        if hasattr(self, 'sigma'):
+            outImg.sigma = np.abs(np.rad2deg(self.sigma))
+
+        return outImg
+
+    def deg2rad(self):
+        '''A simple method for converting the image array values from degrees
+        to radians.
+        '''
+        outImg = self.copy()
+        outImg.arr = np.deg2rad(self.arr)
+
+        if hasattr(self, 'sigma'):
+            outImg.sigma = np.deg2rad(self.sigma)
+
+        return outImg
+
     def copy(self):
+        # Make a copy of the image and return it to the user
         output = copy.deepcopy(self)
-        # # Define a fresh image to copy all the properties
-        # output = AstroImage()
-        # if hasattr(self, 'arr'):
-        #     output.arr = self.arr.copy()
-        # if hasattr(self, 'binning'):
-        #     output.binning = self.binning
-        # if hasattr(self, 'header'):
-        #     output.header = self.header.copy()
-        # if hasattr(self, 'filename'):
-        #     output.filename = self.filename
-        #
-        # # I should use "setattr('arr')" or something like that
-        # # to make sure that dtype is defined as soon as "arr" is defined
-        # if hasattr(self, 'dtype'):
-        #     output.dtype = self.dtype
-        #
+
         return output
 
     def write(self, filename = ''):
@@ -371,12 +698,12 @@ class AstroImage(object):
         else:
             self.arr = scaledArr
 
-    def rebin(self, nx1, ny1, copy=False, total=False):
-        """Rebins the image using a flux conservative method.
-        If 'copy' is True, then the method will return a new copy
-        of the image with its array rebinned. Otherwise, the image will be
-        rebinned in place.
+    def frebin(self, nx1, ny1, copy=False, total=False):
+        """Rebins the image using a flux conservative method. If 'copy' is True,
+        then the method will return a new copy of the image with its array
+        rebinned. Otherwise, the image will be rebinned in place.
         """
+
         # First test for the trivial case
         ny, nx = self.arr.shape
         if (nx == nx1) and (ny == ny1):
@@ -389,9 +716,6 @@ class AstroImage(object):
         xratio, yratio = np.float(nx1)/np.float(nx), np.float(ny1)/np.float(ny)
         pixRatio       = np.float(xratio*yratio)
         aspect         = yratio/xratio         #Measures change in aspect ratio.
-
-#        if xratio != yratio:
-#            raise ValueError('Submitted shape would change image aspect ratio.')
 
         if ((nx % nx1) == 0) and ((ny % ny1) == 0):
             # Handle integer downsampling
@@ -499,9 +823,6 @@ class AstroImage(object):
                 outHead['CD2_2'] = thisCD[1,1]/yratio
             elif wcs.wcs.has_pc():
                 # Apply updates to CDELT valus
-#                pdb.set_trace()
-#                outHead['CDELT1'] = xratio * outHead['CDELT1']
-#                outHead['CDELT2'] = yratio * outHead['CDELT2']
                 outHead['CDELT1'] = outHead['CDELT1']/xratio
                 outHead['CDELT2'] = outHead['CDELT2']/yratio
 
@@ -535,247 +856,186 @@ class AstroImage(object):
             # TODO make binning a (dx, dy) tuple
             self.binning = xratio * self.binning
 
+    def rebin(self, nx1, ny1, copy=False, total=False):
+        """Rebins the image using sigma attribute to produce a weighted average.
+        The new image shape must be integer multiples of fractions of the
+        original shape. If 'copy' is True, then the method will return a new
+        copy of the image with its array rebinned. Otherwise, the image will be
+        rebinned in place.
+        """
+        # Grab the shape of the initial array
+        ny, nx = self.arr.shape
 
+        # Test for improper result shape
+        goodX = ((nx % nx1) == 0) or ((nx1 % nx) == 0)
+        goodY = ((ny % ny1) == 0) or ((ny1 % ny) == 0)
+        if not (goodX and goodY):
+            raise ValueError('Result dimensions must be integer factor of original dimensions')
 
+        # First test for the trivial case
+        if (nx == nx1) and (ny == ny1):
+            if copy:
+                return self.copy()
+            else:
+                return None
 
-#    def rebin(self, binning, copy=False):
-#        """Rebins the image using the INTEGER number of bins specified by
-#        'binning'. If the image shape is a non-integer multiple of the image
-#        array, then zero-padding is added to make the image shape a multiple of
-#        the binning. If 'copy' is True, then the method will return a new copy
-#        of the image with its array rebinned. Otherwise, the image will be
-#        rebinned in place.
-#        """
-#        # Make a copy of the array before applying padding or rebinning
-#        rebinArr = self.arr.copy()
-#
-#        # Check if Y-axis needs padding
-#        remainderY = rebinArr.shape[0] % binning
-#        remainderX = rebinArr.shape[1] % binning
-#        if (remainderY != 0) or (remainderX != 0):
-#            # Add padding where needed
-#            rebinArr = np.pad(rebinArr, ((0, binning - remainderY),
-#                                         (0, binning - remainderX)),
-#                              mode='constant')
-#
-#        # Get the new shape for the array and compute the rebinning shape
-#        newShape = rebinArr.shape[0]//binning, rebinArr.shape[1]//binning
-#        sh = (newShape[0],rebinArr.shape[0]//newShape[0],
-#              newShape[1],rebinArr.shape[1]//newShape[1])
-#
-#        # Perform the actual rebinning
-#        rebinArr = rebinArr.reshape(sh).mean(-1).mean(1)
-#
-#        # Check if there is a header needing modification
-#        if hasattr(self, 'header'):
-#            # Handle the necessary changes to the header
-#            outHead = self.header.copy()
-#            wcs = WCS(outHead)
-#
-#            # First update the NAXIS keywords
-#            outHead['NAXIS1'] = newShape[1]
-#            outHead['NAXIS2'] = newShape[0]
-#
-#            # Now update the CRPIX and CRVAL values
-#            outHead['CRPIX1'] = outHead['CRPIX1']/binning
-#            outHead['CRPIX2'] = outHead['CRPIX2']/binning
-#            outHead['CRDELT1'] = binning * outHead['CRDELT1']
-#            outHead['CRDELT2'] = binning * outHead['CRDELT2']
-#
-#            try:
-#                # Attempt to use CD matrix corrections, first
-#                # Apply updates to CD valus
-#                outCD = binning * wcs.wcs.cd
-#                outHead['CD1_1'] = outCD[0,0]
-#                outHead['CD1_2'] = outCD[0,1]
-#                outHead['CD2_1'] = outCD[1,0]
-#                outHead['CD2_2'] = outCD[1,1]
-#            except:
-#                # If there were no CD values, then try PC values
-#                try:
-#                    # Apply updates to CDELT valus
-#                    outHead['CDELT1'] = binning * outHead['CDELT1']
-#                    outHead['CDELT2'] = binning * outHead['CDELT2']
-#                except:
-#                    pass
-#        else:
-#            # If no header exists, then buil a basic one
-#            keywords = ['NAXIS2', 'NAXIS1']
-#            values   = newShape
-#            headDict = dict(zip(keywords, values))
-#            outHead  = fits.Header(headDict)
-#
-#        if copy:
-#            # If a copy was requesty, then return a copy of the original image
-#            # with a newly rebinned array
-#            outImg         = self.copy()
-#            outImg.arr     = rebinArr
-#            outImg.header  = outHead
-#            outImg.binning = binning * outImg.binning
-#            return outImg
-#        else:
-#            # Otherwise place the rebinned array directly into the Image object
-#            self.arr     = rebinArr
-#            self.header  = outHead
-#            self.binning = binning * self.binning
+        # Compute the pixel ratios of upsampling and down sampling
+        xratio, yratio = np.float(nx1)/np.float(nx), np.float(ny1)/np.float(ny)
+        pixRatio       = np.float(xratio*yratio)
+        aspect         = yratio/xratio         #Measures change in aspect ratio.
 
-#    def congrid(self, newdims, method='linear', centre=False, minusone=False):
-#        '''Arbitrary resampling of source array to new dimension sizes.
-#        Currently only supports maintaining the same number of dimensions.
-#        To use 1-D arrays, first promote them to shape (x,1).
-#
-#        Uses the same parameters and creates the same co-ordinate lookup points
-#        as IDL''s congrid routine, which apparently originally came from a VAX/VMS
-#        routine of the same name.
-#
-#        method:
-#        neighbour - closest value from original data
-#        nearest and linear - uses n x 1-D interpolations using
-#                             scipy.interpolate.interp1d
-#        (see Numerical Recipes for validity of use of n 1-D interpolations)
-#        spline - uses ndimage.map_coordinates
-#
-#        centre:
-#        True - interpolation points are at the centres of the bins
-#        False - points are at the front edge of the bin
-#
-#        minusone:
-#        For example- inarray.shape = (i,j) & new dimensions = (x,y)
-#        False - inarray is resampled by factors of (i/x) * (j/y)
-#        True - inarray is resampled by(i-1)/(x-1) * (j-1)/(y-1)
-#        This prevents extrapolation one element beyond bounds of input array.
-#        '''
-#        if not self.arr.dtype in [np.float64, np.float32]:
-#            self.arr = np.cast[float](self.arr)
-#            self.dtype = float
-#
-#        m1 = np.cast[int](minusone)
-#        ofs = np.cast[int](centre) * 0.5
-#        old = np.array( self.arr.shape )
-#        ndims = len( self.arr.shape )
-#        if len( newdims ) != ndims:
-#            print("[congrid] dimensions error. " \
-#                  "This routine currently only support " \
-#                  "rebinning to the same number of dimensions.")
-#            return None
-#        newdims = np.asarray( newdims, dtype=float )
-#        dimlist = []
-#
-#        if method == 'neighbour':
-#            for i in range( ndims ):
-#                base = np.indices(newdims)[i]
-#                dimlist.append( (old[i] - m1) / (newdims[i] - m1) \
-#                                * (base + ofs) - ofs )
-#            cd = np.array( dimlist ).round().astype(int)
-#            newa = self.arr[list( cd )]
-#            self.arr = newa
-##            return newa
-#
-#        elif method in ['nearest','linear']:
-#            # calculate new dims
-#            for i in range( ndims ):
-#                base = np.arange( newdims[i] )
-#                dimlist.append( (old[i] - m1) / (newdims[i] - m1) \
-#                                * (base + ofs) - ofs )
-#            # specify old dims
-#            olddims = [np.arange(i, dtype = np.float) for i in list( self.arr.shape )]
-#
-#            # first interpolation - for ndims = any
-#            mint = interpolate.interp1d( olddims[-1], self.arr, kind=method )
-#            newa = mint( dimlist[-1] )
-#
-#            trorder = [ndims - 1] + range( ndims - 1 )
-#            for i in range( ndims - 2, -1, -1 ):
-#                newa = newa.transpose( trorder )
-#
-#                mint = interpolate.interp1d( olddims[i], newa, kind=method )
-#                newa = mint( dimlist[i] )
-#
-#            if ndims > 1:
-#                # need one more transpose to return to original dimensions
-#                newa = newa.transpose( trorder )
-#
-#            self.arr = newa
-##            return newa
-#
-#        elif method in ['spline']:
-#            oslices = [ slice(0,j) for j in old ]
-#            oldcoords = np.ogrid[oslices]
-#            nslices = [ slice(0,j) for j in list(newdims) ]
-#            newcoords = np.mgrid[nslices]
-#
-#            newcoords_dims = list(np.arange(np.ndim(newcoords)))
-#            #make first index last
-#            newcoords_dims.append(newcoords_dims.pop(0))
-#            newcoords_tr = newcoords.transpose(newcoords_dims)
-#            # makes a view that affects newcoords
-#
-#            newcoords_tr += ofs
-#
-#            deltas = (np.asarray(old) - m1) / (newdims - m1)
-#            newcoords_tr *= deltas
-#
-#            newcoords_tr -= ofs
-#
-#            newa = ndimage.map_coordinates(self.arr, newcoords)
-#            self.arr = newa
-##            return newa
-#        else:
-#            print("Congrid error: Unrecognized interpolation type.\n", \
-#                  "Currently only \'neighbour\', \'nearest\',\'linear\',", \
-#                  "and \'spline\' are supported.")
-#            return None
-#
-#        # Apply the header updates
-#        # Check if there is a header needing modification
-#        if hasattr(self, 'header'):
-#            # Handle the necessary changes to the header
-#            outHead = self.header.copy()
-#            wcs = WCS(outHead)
-#
-#            # Compute the amount "zoomed" by this regridding
-##            zoomFactor = tuple(np.array(newdims)/np.array(old))
-#            zoomFactor = tuple(np.array(old)/np.array(newdims))
-#
-#            # First update the NAXIS keywords
-#            outHead['NAXIS1'] = np.int(np.round(newdims[1]))
-#            outHead['NAXIS2'] = np.int(np.round(newdims[0]))
-#
-#            # Now update the CRPIX and CRVAL values
-#            outHead['CRPIX1']  = outHead['CRPIX1'] / zoomFactor[1]
-#            outHead['CRPIX2']  = outHead['CRPIX2'] / zoomFactor[0]
-##            outHead['CRDELT1'] = zoomFactor[1] * outHead['CRDELT1']
-##            outHead['CRDELT2'] = zoomFactor[0] * outHead['CRDELT2']
-#
-#            try:
-#                # Attempt to use CD matrix corrections, first
-#                # Apply updates to CD valus
-#                outCD = wcs.wcs.cd
-#                outCD[:,0] = zoomFactor[1] * outCD[:,0]
-#                outCD[:,1] = zoomFactor[0] * outCD[:,1]
-#
-#                outHead['CD1_1'] = zoomFactor[1] * outCD[0,0]
-#                outHead['CD1_2'] = zoomFactor[0] * outCD[0,1]
-#                outHead['CD2_1'] = zoomFactor[1] * outCD[1,0]
-#                outHead['CD2_2'] = zoomFactor[0] * outCD[1,1]
-#            except:
-#                # If there were no CD values, then try PC values
-#                try:
-#                    # Apply updates to CDELT valus
-#                    outHead['CDELT1'] = zoomFactor[1] * outHead['CDELT1']
-#                    outHead['CDELT2'] = zoomFactor[0] * outHead['CDELT2']
-#                except:
-#                    # In this case NO scaling factors were updated... ooops!
-#                    pass
-#        else:
-#            # If no header exists, then buil a basic one
-#            keywords = ['NAXIS2', 'NAXIS1']
-#            values   = newdims
-#            headDict = dict(zip(keywords, values))
-#            outHead  = fits.Header(headDict)
-#
-#        # Store the updated header values
-#        self.header  = outHead
+        if ((nx % nx1) == 0) and ((ny % ny1) == 0):
+            # Handle integer downsampling
+            # Get the new shape for the array and compute the rebinning shape
+            sh = (ny1, ny//ny1,
+                  nx1, nx//nx1)
+
+            # Build the appropriate weights for the averaging procedure
+            if hasattr(self, 'sigma'):
+                wts    = self.sigma**(-2)
+            else:
+                wts = np.ones_like(self.arr)
+
+            # Build the weighted array
+            tmpArr = wts*self.arr
+
+            # Perform the actual rebinning
+            rebinWts = wts.reshape(sh).mean(-1).mean(1)
+            rebinArr = (tmpArr.reshape(sh).mean(-1).mean(1))/rebinWts
+            rebinSig = np.sqrt(1.0/rebinWts)
+
+            # Check if total flux conservation was requested
+            if total:
+                # Re-normalize by pixel area ratio
+                rebinArr /= pixRatio
+
+                # Apply the same re-normalizing to the sigma array
+                if hasattr(self, 'sigma'):
+                    rebinSig /= pixRatio
+
+        elif ((nx1 % nx) == 0) and ((ny1 % ny) == 0):
+            # Handle integer upsampling
+            rebinArr = np.kron(self.arr, np.ones((ny1//ny, nx1//nx)))
+            if hasattr(self, 'sigma'):
+                rebinSig  = np.kron(self.sigma, np.ones((ny1//ny, nx1//nx)))
+
+            # Check if total flux conservation was requested
+            if total:
+                # Re-normalize by pixel area ratio
+                rebinArr /= pixRatio
+
+                if hasattr(self, 'sigma'):
+                    rebinSig /= pixRatio
+
+        # Check if there is a header needing modification
+        if hasattr(self, 'header'):
+            outHead = self.header.copy()
+            wcs     = WCS(self.header)
+
+            # Update the NAXIS values
+            outHead['NAXIS1'] = nx1
+            outHead['NAXIS2'] = ny1
+
+            # Update the CRPIX values
+            outHead['CRPIX1'] = (self.header['CRPIX1'] + 0.5)*xratio - 0.5
+            outHead['CRPIX2'] = (self.header['CRPIX2'] + 0.5)*yratio - 0.5
+            if wcs.wcs.has_cd():
+                # Attempt to use CD matrix corrections, first
+                # Apply updates to CD valus
+                thisCD = wcs.wcs.cd
+                # TODO set CDELT value properly in the "astrometry" step
+                outHead['CD1_1'] = thisCD[0,0]/xratio
+                outHead['CD1_2'] = thisCD[0,1]/yratio
+                outHead['CD2_1'] = thisCD[1,0]/xratio
+                outHead['CD2_2'] = thisCD[1,1]/yratio
+            elif wcs.wcs.has_pc():
+                # Apply updates to CDELT valus
+                outHead['CDELT1'] = outHead['CDELT1']/xratio
+                outHead['CDELT2'] = outHead['CDELT2']/yratio
+
+                # Adjust the PC matrix if non-equal plate scales.
+                # See equation 187 in Calabretta & Greisen (2002)
+                if aspect != 1.0:
+                    outHead['PC1_1'] = outHead['PC1_1']
+                    outHead['PC2_2'] = outHead['PC2_2']
+                    outHead['PC1_2'] = outHead['PC1_2']/aspect
+                    outHead['PC2_1'] = outHead['PC2_1']*aspect
+        else:
+            # If no header exists, then buil a basic one
+            keywords = ['NAXIS2', 'NAXIS1']
+            values   = (ny1, nx1)
+            headDict = dict(zip(keywords, values))
+            outHead  = fits.Header(headDict)
+
+        if copy:
+            # If a copy was requesty, then return a copy of the original image
+            # with a newly rebinned array
+            outImg         = self.copy()
+            outImg.arr     = rebinArr
+
+            # Update the uncertainty attribute
+            # This may be a newly computed "uncertainty of the mean"
+            outImg.sigma = rebinSig
+
+            # Update the header if it exists
+            if hasattr(self, 'header'):
+                outImg.header  = outHead
+
+            # TODO make binning a (dx, dy) tuple
+            outImg.binning = (outImg.binning[0]/xratio,
+                              outImg.binning[1]/yratio)
+
+            # Return the updated image object
+            return outImg
+        else:
+            # Otherwise place the rebinned array directly into the Image object
+            self.arr     = rebinArr
+
+            if hasattr(self, 'sigma'):
+                self.sigma   = rebinSig
+
+            if hasattr(self, 'header'):
+                self.header  = outHead
+
+            # TODO make binning a (dx, dy) tuple
+            self.binning = (self.binning[0]/xratio,
+                            self.binning[1]/yratio)
+
+    def pad(self, pad_width, mode=None, **kwargs):
+        '''A method for padding the arr and sigma attributes and also updating
+        the astrometry information in the header.
+        '''
+        # Pad the primary array
+        tmpArr   = np.pad(self.arr, pad_width, mode=mode, **kwargs)
+        self.arr = tmpArr
+
+        # Pad the sigma array if one is defined
+        if hasattr(self, 'sigma'):
+            tmpSig     = np.pad(self.sigma, pad_width, mode=mode, **kwargs)
+            self.sigma = tmpSig
+
+        # Update the header information if possible
+        if hasattr(self, 'header'):
+            tmpHeader = self.header.copy()
+            if 'WCSAXES' in tmpHeader.keys():
+                # Parse the pad_width parameter
+                if len(pad_width) > 1:
+                    # If separate x and y paddings were specified, check them
+                    xPad, yPad = pad_width
+                    # Grab only theh left-padding values
+                    if len(xPad) > 1: xPad = xPad[0]
+                    if len(yPad) > 1: yPad = yPad[0]
+                else:
+                    xPad, yPad = pad_width, pad_width
+
+                # Now apply the actual updates
+                tmpHeader['CRPIX1'] = self.header['CRPIX1'] + xPad
+                tmpHeader['CRPIX2'] = self.header['CRPIX2'] + yPad
+                tmpHeader['NAXIS1'] = self.arr.shape[1]
+                tmpHeader['NAXIS2'] = self.arr.shape[0]
+
+                # And store those updateds in the self object
+                self.header = tmpHeader
 
     def crop(self, x1, x2, y1, y2, copy=False):
         """This method crops the image array to the locations specified by the
@@ -792,19 +1052,25 @@ class AstroImage(object):
 
         # Make a copy of the array and header
         cropArr = self.arr.copy()
-        outHead = self.header.copy()
-
+        
         # Perform the actual croping
         cropArr = cropArr[y1:y2, x1:x2]
 
-        # Update the header keywords
-        # First update the NAXIS keywords
-        outHead['NAXIS1'] = y2 - y1
-        outHead['NAXIS2'] = x2 - x1
+        # Repeat the process for the sigma array if it exists
+        if hasattr(self, 'sigma'):
+            cropSig = self.sigma.copy()
+            cropSig = cropSig[y1:y2, x1:x2]
 
-        # Next update the CRPIX keywords
-        outHead['CRPIX1'] = outHead['CRPIX1'] - x1
-        outHead['CRPIX2'] = outHead['CRPIX2'] - y1
+        if hasattr(self, 'header'):
+            outHead = self.header.copy()
+            # Update the header keywords
+            # First update the NAXIS keywords
+            outHead['NAXIS1'] = y2 - y1
+            outHead['NAXIS2'] = x2 - x1
+
+            # Next update the CRPIX keywords
+            outHead['CRPIX1'] = outHead['CRPIX1'] - x1
+            outHead['CRPIX2'] = outHead['CRPIX2'] - y1
 
         if copy:
             # If a copy was requesty, then return a copy of the original image
@@ -812,140 +1078,192 @@ class AstroImage(object):
             outImg        = self.copy()
             outImg.arr    = cropArr
             outImg.header = outHead
+
+            # Handle sigma array if it exists
+            if hasattr(self, 'sigma'):
+                outImg.sigma  = cropSig
+
             return outImg
         else:
             # Otherwise place the rebinned array directly into the Image object
             self.arr    = cropArr
             self.header = outHead
 
-    def shift(self, dx, dy):
+            # Handle sigma array if it exists
+            if hasattr(self, 'sigma'):
+                self.sigma = cropSig
+
+    def shift(self, dx, dy, conserve_flux = True, padding=-1e6):
         """A method to shift the image dx pixels to the right and dy pixels up.
-        This method will conserve flux!
+        This method will NOT conserve flux, but it will attempt to handle
+        uncertainties.
 
         parameters:
         dx -- number of pixels to shift right (negative is left)
         dy -- number of pixels to shift up (negative is down)
         """
 
+        # If there is no sigma, then inverse-variance weighting is impossible
+        if not hasattr(self, 'sigma'):
+            conserve_flux = True
+            sigmaExists = False
+        else:
+            sigmaExists = True
+
         # Store the original shape of the image array
         ny, nx = self.arr.shape
 
-        # Check if the X shift is an integer value
+        # Check if the X shift is an within 1 billianth of an integer value
         if round(float(dx), 12).is_integer():
             # Force the shift to an integer value
-            dx   = np.int(round(dx))
-            padX = np.abs(dx)
+            dx = np.int(round(dx))
 
-            if dx > 0:
-                # Shift image to the right
-                shiftImg = np.pad(self.arr, ((0,0), (padX, 0)), mode='constant')
-                shiftImg = shiftImg[:,:nx]
-                self.arr = shiftImg
-            if dx < 0:
-                # Shift image to the left
-                shiftImg = np.pad(self.arr, ((0,0), (0,padX)), mode='constant')
-                shiftImg = shiftImg[:,padX:]
-                self.arr = shiftImg
+            # Make a copy and apply the shift.
+            shiftArr  = np.roll(self.arr, dx, axis = 1)
+
+            # Apply the same shifts to the sigma array if it exists
+            if sigmaExists:
+                shiftSig = np.roll(self.sigma, dx, axis = 1)
+
         else:
             # The x-shift is non-integer...
-            shiftX = np.int(np.ceil(np.abs(dx)))
-            if dx > 0:
-                padLf  = (shiftX - 1, 1)
-                padRt  = (shiftX, 0)
+            # Compute the two integer shiftings needed
+            dxRt = np.int(np.ceil(dx))
+            dxLf = dxRt - 1
 
-                # Compute the contributing fractions from the left and right images
-                fracLf = (shiftX - np.abs(dx))
-                fracRt = 1 - fracLf
-            elif dx < 0:
-                padLf  = (0, shiftX)
-                padRt  = (1, shiftX - 1)
+            # Produce the shifted arrays
+            arrRt = np.roll(self.arr, dxRt, axis = 1)
+            arrLf = np.roll(self.arr, dxLf, axis = 1)
 
-                # Compute the contributing fractions from the left and right images
-                fracLf = 1 - (shiftX - np.abs(dx))
-                fracRt = 1 - fracLf
+            # Compute the fractional contributions of each array
+            fracRt = np.abs(dx - dxLf)
+            fracLf = np.abs(dx - dxRt)
+
+            if conserve_flux:
+                # Compute the shifted array
+                shiftArr = fracRt*arrRt + fracLf*arrLf
+
+                if sigmaExists:
+                    sigRt = np.roll(self.sigma, dxRt, axis = 1)
+                    sigLf = np.roll(self.sigma, dxLf, axis = 1)
+
+                    # Compute the shifted array
+                    shiftSig = np.sqrt((fracRt*sigRt)**2 + (fracLf*sigLf)**2)
             else:
-                padLf  = (0,0)
-                padRt  = (0,0)
+                # Apply the same shifts to the sigma array if it exists
+                sigRt = np.roll(self.sigma, dxRt, axis = 0)
+                sigLf = np.roll(self.sigma, dxLf, axis = 0)
 
-            # Generate the left and right images
-            imgLf = np.pad(self.arr,
-                           ((0,0), padLf), mode='constant')
-            imgRt = np.pad(self.arr,
-                           ((0,0), padRt), mode='constant')
+                # Compute the weights for the array
+                wtRt = fracRt/sigRt**2
+                wtLf = fracLf/sigLf**2
 
-            # Combine the weighted images
-            shiftImg = fracLf*imgLf + fracRt*imgRt
+                # Compute the weighted array values
+                shiftArr  = wtRt*arrRt + wtLf*arrLf
+                shiftNorm = wtRt + wtLf
+                shiftArr /= shiftNorm
 
-            # ...and slice off the padded portions
-            ny, nx = shiftImg.shape
+                # Compute the shifted array
+                shiftSig = np.sqrt(shiftNorm)
+
+        # Now fill in the shifted arrays and save them in the attributes
+        fillX = np.int(np.abs(np.ceil(dx)))
+        if dx > 0:
+            shiftArr[:,0:fillX] = padding
+        elif dx < 0:
+            shiftArr[:,(nx-fillX-1):nx] = padding
+
+        # Place the final result in the arr attribute
+        self.arr = shiftArr
+
+        if sigmaExists:
+            # Now fill in the shifted arrays
             if dx > 0:
-                shiftImg = shiftImg[:,:(nx-shiftX)]
+                shiftSig[:,0:fillX] = np.abs(padding)
             elif dx < 0:
-                shiftImg = shiftImg[:,shiftX:]
+                shiftSig[:,(nx-fillX-1):nx] = np.abs(padding)
 
-            # Place the shifted image in the arr attribute
-            self.arr = shiftImg
+            # Place the shifted array in the sigma attribute
+            self.sigma = shiftSig
 
-        # Check if the Y shift is an integer value
-        if round(float(dy), 6).is_integer():
+        # Check if the Y shift is an within 1 billianth of an integer value
+        if round(float(dy), 12).is_integer():
             # Force the shift to an integer value
-            dy   = np.int(round(dy))
-            padY = np.abs(dy)
+            dy = np.int(round(dy))
 
-            if dy > 0:
-                # Shift image to the right
-                shiftImg = np.pad(self.arr, ((padY, 0), (0,0)), mode='constant')
-                shiftImg = shiftImg[:ny,:]
-                self.arr = shiftImg
-            if dy < 0:
-                # Shift image to the left
-                shiftImg = np.pad(self.arr, ((0,padY), (0,0)), mode='constant')
-                shiftImg = shiftImg[padY:,:]
-                self.arr = shiftImg
+            # Make a copy and apply the shift.
+            shiftArr  = np.roll(self.arr, dy, axis = 0)
+
+            # Apply the same shifts to the sigma array if it exists
+            if sigmaExists:
+                shiftSig = np.roll(self.sigma, dy, axis = 0)
         else:
             # The y-shift is non-integer...
-            shiftY = np.int(np.ceil(np.abs(dy)))
-            if dy > 0:
-                padBot  = (shiftY - 1, 1)
-                padTop  = (shiftY, 0)
+            # Compute the two integer shiftings needed
+            dyTop = np.int(np.ceil(dy))
+            dyBot = dyTop - 1
 
-                # Compute the contributing fractions from the top and bottom images
-                fracBot = (shiftY - np.abs(dy))
-                fracTop = 1 - fracBot
+            # Produce the shifted arrays
+            arrTop = np.roll(self.arr, dyTop, axis = 0)
+            arrBot = np.roll(self.arr, dyBot, axis = 0)
 
-            elif dy < 0:
-                padBot  = (0, shiftY)
-                padTop  = (1, shiftY - 1)
+            # Compute the fractional contributions of each array
+            fracTop = np.abs(dy - dyBot)
+            fracBot = np.abs(dy - dyTop)
 
-                # Compute the contributing fractions from the top and bottom images
-                fracBot = 1 - (shiftY - np.abs(dy))
-                fracTop = 1 - fracBot
+            if conserve_flux:
+                # Compute the shifted array
+                shiftArr = fracTop*arrTop + fracBot*arrBot
+
+                # Apply the same shifts to the sigma array if it exists
+                if sigmaExists:
+                    sigTop = np.roll(self.sigma, dyTop, axis = 0)
+                    sigBot = np.roll(self.sigma, dyBot, axis = 0)
+
+                    # Compute the shifted array
+                    shiftSig = np.sqrt((fracTop*sigTop)**2 + (fracBot*sigBot)**2)
             else:
-                padBot  = (0,0)
-                padTop  = (0,0)
+                # Apply the same shifts to the sigma array if it exists
+                sigTop = np.roll(self.sigma, dyTop, axis = 0)
+                sigBot = np.roll(self.sigma, dyBot, axis = 0)
 
-            # Generate the left and right images
-            imgBot = np.pad(self.arr,
-                            (padBot, (0,0)), mode='constant')
-            imgTop = np.pad(self.arr,
-                            (padTop, (0,0)), mode='constant')
+                # Compute the weights for the array
+                wtTop = fracTop/sigTop**2
+                wtBot = fracBot/sigBot**2
 
-            # Combine the weighted images
-            shiftImg = fracBot*imgBot + fracTop*imgTop
+                # Compute the weighted array values
+                shiftArr  = wtTop*arrTop + wtBot*arrBot
+                shiftNorm = wtTop + wtBot
+                shiftArr /= shiftNorm
 
-            # ...and slice off the padded portions
-            ny, nx = shiftImg.shape
+                # Compute the shifted array
+                shiftSig = np.sqrt(shiftNorm)
+
+        # Filll in the emptied pixels
+        fillY = np.int(np.abs(np.ceil(dy)))
+        if dy > 0:
+            shiftArr[0:fillY,:] = padding
+        elif dy < 0:
+            shiftArr[(ny-fillY-1):ny,:] = padding
+
+        # Place the shifted array in the arr attribute
+        self.arr = shiftArr
+
+        if sigmaExists:
+            # Now fill in the shifted arrays
             if dy > 0:
-                shiftImg = shiftImg[:(ny-shiftY),:]
+                shiftSig[0:fillY,:] = np.abs(padding)
             elif dy < 0:
-                shiftImg = shiftImg[shiftY:,:]
+                shiftSig[(ny-fillY-1):ny,:] = np.abs(padding)
 
-            # Place the shifted image in the arr attribute
-            self.arr = shiftImg
+            # Place the shifted array in the sigma attribute
+            self.sigma = shiftSig
 
-        # Update the header astrometry
-        self.header['CRPIX1'] = self.header['CRPIX1'] + dx
-        self.header['CRPIX2'] = self.header['CRPIX2'] + dy
+        # Finally, update the header information
+        if hasattr(self, 'header'):
+            # Update the header astrometry
+            self.header['CRPIX1'] = self.header['CRPIX1'] + dx
+            self.header['CRPIX2'] = self.header['CRPIX2'] + dy
 
     def in_image(self, coords, edge=0):
         """A method to test which (RA, Dec) coordinates lie within the image.
@@ -1006,34 +1324,32 @@ class AstroImage(object):
         #**********************************************************************
 
         # Align self image with img image
+        newSelf = self.copy()
+        newImg  = img.copy()
 
         # Pad the arrays to make sure they are the same size
         ny1, nx1 = self.arr.shape
         ny2, nx2 = img.arr.shape
-        newSelf  = self.copy()
-        newImg   = img.copy()
         if (nx1 > nx2):
             padX    = nx1 - nx2
-            newImg.arr = np.pad(newImg.arr, ((0,0), (0,padX)), mode='constant')
-            # Update the header information
-            newImg.header['NAXIS1'] = img.header['NAXIS1'] + padX
+            newImg.pad(((0,0), (0,padX)), mode='constant')
             del padX
         if (nx1 < nx2):
-            padX     = nx2 - nx1
-            newSelf.arr = np.pad(newSelf.arr, ((0,0), (0,padX)), mode='constant')
-            newSelf.header['NAXIS1'] = self.header['NAXIS1'] + padX
+            padX    = nx2 - nx1
+            newSelf.pad(((0,0), (0,padX)), mode='constant')
             del padX
-
         if (ny1 > ny2):
             padY    = ny1 - ny2
-            newImg.arr = np.pad(newImg.arr, ((0,padY),(0,0)), mode='constant')
-            newImg.header['NAXIS2'] = img.header['NAXIS2'] + padY
+            newImg.pad(((0,padY),(0,0)), mode='constant')
             del padY
         if (ny1 < ny2):
-            padY     = ny2 - ny1
-            newSelf.arr = np.pad(newSelf.arr, ((0,padY),(0,0)), mode='constant')
-            newSelf.header['NAXIS2'] = self.header['NAXIS2'] + padY
+            padY    = ny2 - ny1
+            newSelf.pad(((0,padY),(0,0)), mode='constant')
             del padY
+
+        # newImage and newSelf should the same shape and size now...
+        # let's double check that's true
+        if newImg.arr.shape != newSelf.arr.shape: pdb.set_trace()
 
         if mode == 'wcs':
             # Grab self image WCS and pixel center
@@ -1049,11 +1365,12 @@ class AstroImage(object):
             x2, y2 = wcs2.all_world2pix(RA1, Dec1, 0)
             x2, y2 = float(x2), float(y2)
 
-            # Compute the image difference
+            # Compute the image possition offset vector
             dx = x2 - x1
             dy = y2 - y1
 
-            # Compute the padding amounts (odd vs. even in python 3.x)
+            # Compute the padding amounts. This is a non-trivial process due to
+            # the way that odd vs. even is determined in python 3.x.
             if (np.int(np.round(dx)) % 2) == 1:
                 padX = np.int(np.round(np.abs(dx))/2 + 1)
             else:
@@ -1096,9 +1413,13 @@ class AstroImage(object):
             selfPadWidth = np.array((selfDY, selfDX), dtype=np.int)
             imgPadWidth  = np.array((imgDY,  imgDX), dtype=np.int)
 
-            # Compute the padding to be added and pad the images
-            newSelf.arr = np.pad(self.arr, selfPadWidth, mode='constant')
-            newImg.arr  = np.pad(img.arr,  imgPadWidth,  mode='constant')
+            # Create copy images
+            newSelf = self.copy()
+            newImg  = img.copy()
+
+            # Compute the padding to be added and pad the arr and sigma arrays
+            newSelf.pad(selfPadWidth, mode='constant')
+            newImg.pad(imgPadWidth, mode='constant')
 
             # Account for un-balanced padding with an initial shift left or down
             initialXshift = selfPadWidth[1,0] - imgPadWidth[1,0]
@@ -1114,6 +1435,8 @@ class AstroImage(object):
                 newImg.shift(0, -initialYshift)
 
             # Update header info
+            pdb.set_trace()
+            ### CHECK THAT THE HEADER IS ALREADY CORRECT
             newSelf.header['NAXIS1'] = newSelf.arr.shape[1]
             newSelf.header['NAXIS2'] = newSelf.arr.shape[0]
             newImg.header['NAXIS1']  = newImg.arr.shape[1]
@@ -1172,6 +1495,7 @@ class AstroImage(object):
             numStars = len(sources)
             yy, xx   = np.mgrid[0:ny,0:nx]
             badStars = []
+
             for iStar in range(numStars):
                 # Grab pixels less than 10 from the star
                 xStar, yStar = sources[iStar]['xcentroid'], sources[iStar]['ycentroid']
@@ -1307,16 +1631,17 @@ class AstroImage(object):
             dy1 = btCorr + (x_soln.item(1) - (numZoneSide*starCutout)//2)
             dx_tot = dx + dx1
             dy_tot = dy + dy1
-
         else:
             print('mode rot recognized')
-            pdb.set_trace(0)
+            pdb.set_trace()
 
+        # The image offsets have been computed, so return the requested data
         if offsets:
             # Return the image offsets
             return [dx_tot, dy_tot]
         else:
             #&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&
+            # TODO
             # IN THE FUTURE THERE SHOULD BE SOME PADDING ADDED TO PREVENT DATA
             # LOSS
             #&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&
@@ -1326,443 +1651,6 @@ class AstroImage(object):
 
             # Retun the aligned Images (not the same size as the input images)
             return [newSelf, newImg]
-
-    def align_stack(imgList, padding=0, mode='wcs', subPixel=False):
-        """A method to align the a whole stack of images using the astrometry
-        from each header to shift an INTEGER number of pixels.
-
-        parameters:
-        imgList -- the list of image to be aligned.
-        padding -- the value to use for padding the edges of the aligned
-                   images. Common values are 0 and NaN.
-        mode    -- ['wcs' | 'cross_correlate'] the method to be used for
-                   aligning the images in imgList. 'wcs' uses the astrometry
-                   in the header while 'cross_correlation' selects a reference
-                   image and computes image offsets using cross-correlation.
-        """
-        # Catch the case where imgList has only one image
-        if len(imgList) <= 1:
-            print('Must have more than one image in the list to be aligned')
-            return
-
-        # Catch the case where imgList has only two images
-        if len(imgList) <= 2:
-            return imgList[0].align(imgList[1], mode=mode)
-
-        #**********************************************************************
-        # Get the offsets using whatever mode was selected
-        #**********************************************************************
-        if mode == 'wcs':
-            # Compute the relative position of each of the images in the stack
-            wcs1      = WCS(imgList[0].header)
-            x1, y1    = imgList[0].arr.shape[1]//2, imgList[0].arr.shape[0]//2
-
-            # Append the first image coordinates to the list
-            shapeList = [imgList[0].arr.shape]
-            imgXpos   = [float(x1)]
-            imgYpos   = [float(y1)]
-
-            # Convert pixels to sky coordinates
-            skyCoord1 = pixel_to_skycoord(x1, y1, wcs1, origin=0, mode='wcs', cls=None)
-
-            # Loop through all the remaining images in the list
-            # Grab the WCS of the alignment image and convert back to pixels
-            for img in imgList[1:]:
-                wcs2   = WCS(img.header)
-                x2, y2 = wcs2.all_world2pix(skyCoord1.ra, skyCoord1.dec, 0)
-                shapeList.append(img.arr.shape)
-                imgXpos.append(float(x2))
-                imgYpos.append(float(y2))
-
-        elif mode == 'cross_correlate':
-            # Use the first image in the list as the "reference image"
-            refImg = imgList[0]
-
-            # Initalize empty lists for storing offsets and shapes
-            shapeList = [refImg.arr.shape]
-            imgXpos   = [0.0]
-            imgYpos   = [0.0]
-
-            # Loop through the rest of the images.
-            # Use cross-correlation to get relative offsets,
-            # and accumulate image shapes
-            for img in imgList[1:]:
-                dx, dy = refImg.align(img, mode='cross_correlate', offsets=True)
-                shapeList.append(img.arr.shape)
-                imgXpos.append(-dx)
-                imgYpos.append(-dy)
-        else:
-            print('mode not recognized')
-            pdb.set_trace()
-
-        # Make sure all the images are the same size
-        shapeList = np.array(shapeList)
-        nyFinal   = np.max(shapeList[:,0])
-        nxFinal   = np.max(shapeList[:,1])
-
-        # Compute the median pointing
-        x1 = np.median(imgXpos)
-        y1 = np.median(imgYpos)
-
-        # Compute the relative pointings from the median position
-        dx = x1 - np.array(imgXpos)
-        dy = y1 - np.array(imgYpos)
-
-        # Compute the each distance from the median pointing
-        imgDist   = np.sqrt(dx**2.0 + dy**2.0)
-        centerImg = np.where(imgDist == np.min(imgDist))[0][0]
-
-        # Set the "reference image" to the one closest to the median pointing
-        x1, y1 = imgXpos[centerImg], imgYpos[centerImg]
-
-        # Recompute the offsets from the reference image
-        # (add an 'epsilon' shift to make sure ALL images get shifted
-        # at least a tiny bit... this guarantees the images all get convolved
-        # by the pixel shape.)
-        epsilon = 1e-4
-        dx = x1 - np.array(imgXpos) + epsilon
-        dy = y1 - np.array(imgYpos) + epsilon
-
-        # Check for integer shifts
-        for dx1, dy1 in zip(dx, dy):
-            if dx1.is_integer(): pdb.set_trace()
-            if dy1.is_integer(): pdb.set_trace()
-
-        # Compute the total image padding necessary to fit the whole stack
-        padLf     = np.int(np.round(np.abs(np.min(dx))))
-        padRt     = np.int(np.round(np.max(dx)))
-        padBot    = np.int(np.round(np.abs(np.min(dy))))
-        padTop    = np.int(np.round(np.max(dy)))
-        totalPadX = padLf  + padRt
-        totalPadY = padBot + padTop
-
-        # Test for sanity
-        if ((totalPadX > np.max(shapeList[:,1])) or
-            (totalPadY > np.max(shapeList[:,0]))):
-            print('there is a problem with the alignment')
-            pdb.set_trace()
-
-        # compute padding
-        padX     = (padLf, padRt)
-        padY     = (padBot, padTop)
-        padWidth = np.array((padY,  padX), dtype=np.int)
-
-        # Create an empty list to store the aligned images
-        alignedImgList = []
-
-        # Loop through each image and pad it accordingly
-        for i in range(len(imgList)):
-            # Make a copy of the image
-            newImg     = imgList[i].copy()
-
-            # Check if this image needs an initial padding to match final size
-            if (nyFinal, nxFinal) != imgList[i].arr.shape:
-                padX       = nxFinal - imgList[i].arr.shape[1]
-                padY       = nyFinal - imgList[i].arr.shape[0]
-                initialPad = ((0, padY), (0, padX))
-                newImg.arr = np.pad(newImg.arr, initialPad,
-                                    mode='constant', constant_values=padding)
-
-            # Apply the more complete padding
-            newImg.arr = np.pad(newImg.arr, padWidth,
-                                mode='constant', constant_values=padding)
-
-            # Update the header information
-            newImg.header['CRPIX1'] = newImg.header['CRPIX1'] + padWidth[1][0]
-            newImg.header['CRPIX2'] = newImg.header['CRPIX2'] + padWidth[0][0]
-            newImg.header['NAXIS1'] = newImg.arr.shape[1]
-            newImg.header['NAXIS2'] = newImg.arr.shape[0]
-
-            # Shift the images
-            if subPixel:
-                shiftX = dx[i]
-                shiftY = dy[i]
-            else:
-                shiftX = np.int(np.round(dx[i]))
-                shiftY = np.int(np.round(dy[i]))
-            newImg.shift(shiftX, shiftY)
-
-            # Append the shifted image
-            alignedImgList.append(newImg)
-
-        return alignedImgList
-
-    def stacked_average(imgList, clipSigma = 3.0):
-        """Compute the median filtered mean of a stack of images.
-        Standard deviation is computed from the variance of the stack of
-        pixels.
-
-        parameters:
-        imgList   -- a list containing Image class objects.
-        clipSigma -- the level at which to trim outliers (default = 3)
-        """
-        numImg = len(imgList)
-        print('\nEntered averaging method')
-        if numImg > 1:
-            # Test for the correct number of bits in each pixel
-            dataType    = imgList[0].dtype
-            if dataType == np.int16:
-                numBits = 16
-            elif (dataType == np.int32) or (dataType == np.float32):
-                numBits = 32
-            elif (dataType == np.int64) or (dataType == np.float64):
-                numBits = 64
-
-            # Compute the number of pixels that fit under the memory limit.
-            memLimit    = (psutil.virtual_memory().available/
-                          (numBits*(1024**2)))
-            memLimit    = int(10*np.floor(memLimit/10.0))
-            numStackPix = memLimit*(1024**2)*8/numBits
-            ny, nx      = imgList[0].arr.shape
-            numRows     = int(np.floor(numStackPix/(numImg*nx)))
-            if numRows > ny: numRows = ny
-            numSections = int(np.ceil(ny/numRows))
-
-            # Compute the number of subsections and display stats to user
-            print('\nAiming to fit each stack into {0:g}MB of memory'.format(memLimit))
-            print('\nBreaking stack of {0:g} images into {1:g} sections of {2:g} rows'
-              .format(numImg, numSections, numRows))
-
-            # Initalize an array to store the final averaged image
-            meanImg  = np.zeros((ny,nx))
-            sigmaImg = np.zeros((ny,nx))
-
-            # Compute the stacked average of each section
-            #
-            #
-            # TODO Check that this section averaging is working correctly!!!
-            #
-            #
-            for thisSec in range(numSections):
-                # Calculate the row numbers for this section
-                thisRows = (thisSec*numRows,
-                            min([(thisSec + 1)*numRows, ny]))
-
-                # Stack the selected region of the images.
-                secRows = thisRows[1] - thisRows[0]
-                stack   = np.ma.zeros((numImg, secRows, nx), dtype = dataType)
-                for i in range(numImg):
-                    stack[i,:,:] = imgList[i].arr[thisRows[0]:thisRows[1],:]
-
-                # Catch and mask any NaNs or Infs
-                # before proceeding with the average
-                NaNsOrInfs  = np.logical_or(np.isnan(stack.data),
-                                            np.isinf(stack.data))
-                stack.mask  = NaNsOrInfs
-
-                # Now that the bad values have been saved,
-                # replace them with signal "bad-data" values
-                stack.data[np.where(NaNsOrInfs)] = -1*(10**6)
-
-                print('\nAveraging rows {0[0]:g} through {0[1]:g}'.format(thisRows))
-
-                # Iteratively clip outliers until answer converges.
-                # Use the stacked median for first image estimate.
-                outliers = np.zeros(stack.shape, dtype = bool)
-
-                # This loop will iterate until the mask converges to an
-                # unchanging state, or until clipSigma is reached.
-                numLoops  = round((clipSigma - 2)/0.2) + 1
-                numPoints = np.zeros((secRows, nx), dtype=int) + 16
-                scale     = np.zeros((secRows, nx)) + 2.0
-                for iLoop in range(numLoops):
-                    print('\tProcessing section for sigma = {0:g}'.format(2.0+iLoop*0.2))
-                    # Loop through the stack, and find the outliers.
-                    imgEstimate = np.ma.median(stack, axis = 0).data
-                    stackSigma  = np.ma.std(stack, axis = 0).data
-                    for j in range(numImg):
-                        deviation       = np.absolute(stack.data[j,:,:] - imgEstimate)
-                        outliers[j,:,:] = (deviation > scale*stackSigma)
-
-                    # Save the outliers to the mask
-                    stack.mask = np.logical_or(outliers, NaNsOrInfs)
-                    # Save the number of unmasked points along AXIS
-                    numPoints1 = numPoints
-                    # Total up the new number of unmasked points...
-                    numPoints  = np.sum(np.invert(stack.mask), axis = 0)
-                    # Figure out which columns have improved results
-                    nextScale  = (numPoints != numPoints1)
-                    scale     += 0.2*nextScale
-                    if np.sum(nextScale) == 0: break
-
-                # Compute the final mean image.
-                meanImg[thisRows[0]:thisRows[1],:] = np.mean(stack, axis = 0)
-
-                # Compute the uncertainty in the mean
-                # Make sure that we don't divide by sqrt(-1)
-                singleSample = np.where(numPoints <= 1)
-                numPoints[singleSample] = 1
-
-                # Compute the uncertainty in the mean
-                tmpSigma = np.std(stack, axis = 0)/np.sqrt(numPoints - 1)
-
-                # Be honest about singly sampled points
-                tmpSigma[singleSample] = np.NaN
-
-                # Place the uncertainty in the sigmaImg variable
-                sigmaImg[thisRows[0]:thisRows[1],:] = tmpSigma
-
-            # Get ready to return an AstroImage object to the user
-            outImg = AstroImage()
-            outImg.arr = meanImg
-            outImg.sigma = sigmaImg
-            outImg.header = imgList[0].header
-
-            # Now that an average image has been computed,
-            # Clear out the old astrometry
-            if 'WCSAXES' in outImg.header.keys():
-                del outImg.header['WCSAXES']
-                del outImg.header['PC*']
-                del outImg.header['CDELT*']
-                del outImg.header['CUNIT*']
-                del outImg.header['*POLE']
-                outImg.header['CRPIX*'] = 1.0
-                outImg.header['CRVAL*'] = 1.0
-                outImg.header['CTYPE*'] = 'Linear Binned ADC Pixels'
-                outImg.header['NAXIS1'] = outImg.arr.shape[1]
-                outImg.header['NAXIS2'] = outImg.arr.shape[0]
-
-            # Finally return the final result
-            return outImg
-        else:
-            return imgList[0]
-
-    def astrometry(self, override = False):
-        """A method to invoke astrometry.net
-        and solve the astrometry of the image.
-        """
-        # Test if the astrometry has already been solved
-        try:
-            # Try to grab the 'WCSAXES' card from the header
-            self.header['WCSAXES']
-
-            # If the user forces an override, then set doAstrometry=True
-            doAstrometry = override
-        except:
-            # If there was no 'WCSAXES' card, then set doAstrometry=True
-            doAstrometry = True
-
-
-        if doAstrometry:
-            # Test what kind of system is running
-            if 'win' in sys.platform:
-                # If running in Windows,
-                # then define the "bash --login -c (cd ...)" command
-                # using Cygwin's "cygpath" to convert to POSIX format
-                proc = subprocess.Popen(['cygpath', os.getcwd()],
-                                        stdout=subprocess.PIPE,
-                                        universal_newlines=True)
-                curDir = ((proc.communicate())[0]).rstrip()
-                proc.terminate()
-
-                # Convert filename to Cygwin compatible format
-                proc = subprocess.Popen(['cygpath', self.filename],
-                                        stdout=subprocess.PIPE,
-                                        universal_newlines=True)
-                inFile = ((proc.communicate())[0]).rstrip()
-                proc.terminate()
-                prefix = 'bash --login -c ("cd ' + curDir + '; '
-                suffix = '")'
-                delCmd = 'del '
-                shellCmd = True
-            else:
-                # If running a *nix system,
-                # then define null prefix/suffix strings
-                inFile = self.filename
-                prefix = ''
-                suffix = ''
-                delCmd = 'rm '
-                shellCmd = False
-
-            # Setup the basic input/output command options
-            outputCmd    = ' --out tmp'
-            noPlotsCmd   = ' --no-plots'
-            overwriteCmd = ' --overwrite'
-#            dirCmd       = ' --dir debug'
-            dirCmd = ''
-
-            # Provide a guess at the plate scale
-            scaleLowCmd  = ' --scale-low 0.25'
-            scaleHighCmd = ' --scale-high 1.8'
-            scaleUnitCmd = ' --scale-units arcsecperpix'
-
-            # Provide some information about the approximate location
-            raCmd        = ' --ra ' + self.header['TELRA']
-            decCmd       = ' --dec ' + self.header['TELDEC']
-            radiusCmd    = ' --radius 0.3'
-
-            # This is reduced data, so we won't need to clean up the image
-#            imageOptions = '--no-fits2fits --no-background-subtraction'
-            imageOptions = ''
-
-            # Prevent writing any except the "tmp.wcs" file.
-            # In the future it may be useful to set '--index-xyls'
-            # to save star coordinates for photometry.
-            noOutFiles = ' --axy none --corr none' + \
-                         ' --match none --solved none' + \
-                         ' --new-fits none --rdls none' + \
-                         ' --solved none --index-xyls none'
-
-            # Build the final command
-            command      = 'solve-field' + \
-                           outputCmd + \
-                           noPlotsCmd + \
-                           overwriteCmd + \
-                           dirCmd + \
-                           scaleLowCmd + \
-                           scaleHighCmd + \
-                           scaleUnitCmd + \
-                           raCmd + \
-                           decCmd + \
-                           radiusCmd + \
-                           imageOptions + \
-                           noOutFiles + \
-                           ' ' + inFile
-
-            # Run the command in the terminal
-            astroProc = subprocess.Popen(prefix + command +suffix)
-            astroProc.wait()
-            astroProc.terminate()
-            # os.system(prefix + command + suffix)
-
-            # Construct the path to the newly created WCS file
-            filePathList = self.filename.split(os.path.sep)
-            if len(filePathList) > 1:
-                wcsPath = os.path.dirname(self.filename) + os.path.sep + 'tmp.wcs'
-            else:
-                wcsPath = 'tmp.wcs'
-
-            # Read in the tmp.wcs file and create a WCS object
-            if os.path.isfile(wcsPath):
-                HDUlist = fits.open(wcsPath)
-                HDUlist[0].header['NAXIS'] = self.header['NAXIS']
-                wcsObj = WCS(HDUlist[0].header)
-                HDUlist.close()
-
-                # Build a quick header from the WCS object
-                wcsHead = wcsObj.to_header()
-
-                # Update the image header to contain the astrometry info
-                for key in wcsHead.keys():
-                    self.header[key] = wcsHead[key]
-
-                # Cleanup the none and WCS file,
-                rmProc = subprocess.Popen(delCmd + wcsPath, shell=shellCmd)
-                rmProc.wait()
-                rmProc.terminate()
-                noneFile = os.path.join(os.getcwd(), 'none')
-                rmProc = subprocess.Popen(delCmd + noneFile, shell=shellCmd)
-                rmProc.wait()
-                rmProc.terminate()
-
-                # If everything has worked, then return a True success value
-                return True
-            else:
-                # If there was no WCS, then return a False success value
-                return False
-        else:
-            print('Astrometry for {0:s} already solved.'.
-              format(os.path.basename(self.filename)))
 
     def fix_astrometry(self):
         """This ensures that the CDELT values and PC matrix are properly set.
@@ -1862,40 +1750,68 @@ class AstroImage(object):
             # Create a new figure and axes
             wcs  = WCS(self.header)
             fig  = plt.figure(figsize = (8,8))
-            axes = fig.add_subplot(1,1,1, projection=wcs)
+            if wcs.has_celestial:
+                axes = fig.add_subplot(1,1,1, projection=wcs)
 
+                # Set the axes linewidth
+                axes.coords.frame.set_linewidth(2)
+
+                # Label the axes establish minor ticks.
+                RA_ax  = axes.coords[0]
+                Dec_ax = axes.coords[1]
+                RA_ax.set_axislabel('RA [J2000]',
+                                    fontsize=12, fontweight='bold')
+                Dec_ax.set_axislabel('Dec [J2000]',
+                                     fontsize=12, fontweight='bold', minpad=-0.4)
+
+                # Set tick labels
+                RA_ax.set_major_formatter('hh:mm')
+                Dec_ax.set_major_formatter('dd:mm')
+
+                # Set the tick width and length
+                RA_ax.set_ticks(size=12, width=2)
+                Dec_ax.set_ticks(size=12, width=2)
+
+                # Set the other tick label format
+                RA_ax.set_ticklabel(fontsize=12, fontweight='demibold')
+                Dec_ax.set_ticklabel(fontsize=12, fontweight='demibold')
+
+                # Turn on minor ticks
+                RA_ax.display_minor_ticks(True)
+                RA_ax.set_minor_frequency(6)
+                Dec_ax.display_minor_ticks(True)
+                RA_ax.set_minor_frequency(6)
+            else:
+                axes = fig.add_subplot(1,1,1)
             # Set the axes line properties
             for axis in ['top','bottom','left','right']:
                 axes.spines[axis].set_linewidth(4)
 
-            # Set the axes linewidth
-            axes.coords.frame.set_linewidth(2)
-
-            # Label the axes establish minor ticks.
-            RA_ax  = axes.coords[0]
-            Dec_ax = axes.coords[1]
-            RA_ax.set_axislabel('RA [J2000]',
-                                fontsize=12, fontweight='bold')
-            Dec_ax.set_axislabel('Dec [J2000]',
-                                 fontsize=12, fontweight='bold', minpad=-0.4)
-
-            # Set tick labels
-            RA_ax.set_major_formatter('hh:mm')
-            Dec_ax.set_major_formatter('dd:mm')
-
-            # Set the tick width and length
-            RA_ax.set_ticks(size=12, width=2)
-            Dec_ax.set_ticks(size=12, width=2)
-
-            # Set the other tick label format
-            RA_ax.set_ticklabel(fontsize=12, fontweight='demibold')
-            Dec_ax.set_ticklabel(fontsize=12, fontweight='demibold')
-
-            # Turn on minor ticks
-            RA_ax.display_minor_ticks(True)
-            RA_ax.set_minor_frequency(6)
-            Dec_ax.display_minor_ticks(True)
-            RA_ax.set_minor_frequency(6)
+            # # Label the axes establish minor ticks.
+            # RA_ax  = axes.coords[0]
+            # Dec_ax = axes.coords[1]
+            # RA_ax.set_axislabel('RA [J2000]',
+            #                     fontsize=12, fontweight='bold')
+            # Dec_ax.set_axislabel('Dec [J2000]',
+            #                      fontsize=12, fontweight='bold', minpad=-0.4)
+            #
+            # # Set tick labels
+            # RA_ax.set_major_formatter('hh:mm')
+            # Dec_ax.set_major_formatter('dd:mm')
+            #
+            # # Set the tick width and length
+            # RA_ax.set_ticks(size=12, width=2)
+            # Dec_ax.set_ticks(size=12, width=2)
+            #
+            # # Set the other tick label format
+            # RA_ax.set_ticklabel(fontsize=12, fontweight='demibold')
+            # Dec_ax.set_ticklabel(fontsize=12, fontweight='demibold')
+            #
+            # # Turn on minor ticks
+            # RA_ax.display_minor_ticks(True)
+            # RA_ax.set_minor_frequency(6)
+            # Dec_ax.display_minor_ticks(True)
+            # RA_ax.set_minor_frequency(6)
 
             # Put the image in its place
             axIm = axes.imshow(showArr, origin=origin, vmin=vmin, vmax=vmax,
@@ -1927,7 +1843,7 @@ class Bias(AstroImage):
         return np.mean(self.arr)
 
     def master_bias(biasList, clipSigma = 3.0):
-        return AstroImage.stacked_average(biasList, clipSigma = clipSigma)
+        return image_tools.stacked_average(biasList, clipSigma = clipSigma)
 
     def overscan_polynomial(biasList, overscanPos):
         ## Loop through biasList and build a stacked average of the
@@ -1948,7 +1864,7 @@ class Bias(AstroImage):
             overscanList[i].arr = \
               biasList[i].arr[overscanPos1[0][1]:overscanPos1[1][1], \
                                   overscanPos1[0][0]:overscanPos1[1][0]]
-        masterOverscan = AstroImage.stacked_average(overscanList)
+        masterOverscan = image_tools.stacked_average(overscanList)
 
         ## Average across each row.
         overscanRowValues = np.mean(masterOverscan, axis = 1)
@@ -2014,7 +1930,7 @@ class Flat(AstroImage):
         super(Flat, self).__init__(filename)
 
     def master_flat(flatList, clipSigma = 3.0):
-        return AstroImage.stacked_average(flatList, clipSigma = clipSigma)
+        return image_tools.stacked_average(flatList, clipSigma = clipSigma)
 
 class Dark(AstroImage):
     """A subclass of the "Image" class: stores dark frames and provides some
@@ -2037,6 +1953,6 @@ class Dark(AstroImage):
             return expTimes[0]
 
     def dark_current(darkList, clipSigma = 3.0):
-        avgImg   = AstroImage.stacked_average(darkList, clipSigma = clipSigma)
+        avgImg   = image_tools.stacked_average(darkList, clipSigma = clipSigma)
         darkTime = Dark.dark_time(darkList)
         return avgImg/darkTime
