@@ -171,7 +171,7 @@ def astrometry(img, override = False):
     if doAstrometry:
         # Make a copy of the image to be returned
         img1 = img.copy()
-        
+
         # Test what kind of system is running
         if 'win' in sys.platform:
             # If running in Windows,
@@ -470,6 +470,18 @@ def build_pol_maps(Qimg, Uimg):
     # Quickly build the P map
     Pmap  = np.sqrt(Qimg**2 + Uimg**2)
 
+    # Catch any stupid values (nan, inf, etc...)
+    badVals = np.logical_not(
+              np.logical_and(
+              np.isfinite(Pmap.arr),
+              np.isfinite(Pmap.sigma)))
+
+    # Replace the stupid values with zeros\
+    badInds = np.where(badVals)
+    if len(badInds[0]) > 0:
+        Pmap.arr[badInds] = 0.0
+        Pmap.sigma[badInds] = 0.0
+
     # Apply the Ricean correction
     # First check for where the Pmap is an insignificant detection
     zeroInds = np.where(Pmap.arr <= Pmap.sigma)
@@ -551,25 +563,25 @@ def make_colormap(seq):
 #pdb.set_trace()
 #rvb = make_colormap(
 #   [c('red'), c('violet'), 0.33, c('violet'), c('blue'), 0.66, c('blue')])
-rvb = make_colormap(
-   [(1.0, 0.0, 0.0), (1.0, 0.5, 0.0), 1.0/12.0, # Red-Orange
-    (1.0, 0.5, 0.0), (1.0, 1.0, 0.0), 2.0/12.0, # Orange-Yellow
-    (1.0, 1.0, 0.0), (0.5, 1.0, 0.0), 3.0/12.0, # Yellow-Spring Green
-    (0.5, 1.0, 0.0), (0.0, 1.0, 0.0), 4.0/12.0, # Spring Green-Green
-    (0.0, 1.0, 0.0), (0.0, 1.0, 0.5), 5.0/12.0, # Green-Turquoise
-    (0.0, 1.0, 0.5), (0.0, 1.0, 1.0), 6.0/12.0, # Turquoise-Cyan
-    (0.0, 1.0, 1.0), (0.0, 0.5, 1.0), 7.0/12.0, # Cyan-Ocean
-    (0.0, 0.5, 1.0), (0.0, 0.0, 1.0), 8.0/12.0, # Ocean-Blue
-    (0.0, 0.0, 1.0), (0.5, 0.0, 1.0), 9.0/12.0, # Blue-Violet
-    (0.5, 0.0, 1.0), (1.0, 0.0, 1.0), 10.0/12.0, # Violet-Magenta
-    (1.0, 0.0, 1.0), (1.0, 0.0, 0.5), 11.0/12.0, # Magenta-Raspbery
-    (1.0, 0.0, 0.5), (1.0, 0.0, 0.0), 12.0/12.0, # Raspbery-Red
-    (1.0, 0.0, 0.0)                              # Cap it off with red
-    ])
-
-N = 1000
-array_dg = np.random.uniform(0, 10, size=(N, 2))
-colors = np.random.uniform(-2, 2, size=(N,))
-plt.scatter(array_dg[:, 0], array_dg[:, 1], c=colors, cmap=rvb)
-plt.colorbar()
-plt.show()
+# rvb = make_colormap(
+#    [(1.0, 0.0, 0.0), (1.0, 0.5, 0.0), 1.0/12.0, # Red-Orange
+#     (1.0, 0.5, 0.0), (1.0, 1.0, 0.0), 2.0/12.0, # Orange-Yellow
+#     (1.0, 1.0, 0.0), (0.5, 1.0, 0.0), 3.0/12.0, # Yellow-Spring Green
+#     (0.5, 1.0, 0.0), (0.0, 1.0, 0.0), 4.0/12.0, # Spring Green-Green
+#     (0.0, 1.0, 0.0), (0.0, 1.0, 0.5), 5.0/12.0, # Green-Turquoise
+#     (0.0, 1.0, 0.5), (0.0, 1.0, 1.0), 6.0/12.0, # Turquoise-Cyan
+#     (0.0, 1.0, 1.0), (0.0, 0.5, 1.0), 7.0/12.0, # Cyan-Ocean
+#     (0.0, 0.5, 1.0), (0.0, 0.0, 1.0), 8.0/12.0, # Ocean-Blue
+#     (0.0, 0.0, 1.0), (0.5, 0.0, 1.0), 9.0/12.0, # Blue-Violet
+#     (0.5, 0.0, 1.0), (1.0, 0.0, 1.0), 10.0/12.0, # Violet-Magenta
+#     (1.0, 0.0, 1.0), (1.0, 0.0, 0.5), 11.0/12.0, # Magenta-Raspbery
+#     (1.0, 0.0, 0.5), (1.0, 0.0, 0.0), 12.0/12.0, # Raspbery-Red
+#     (1.0, 0.0, 0.0)                              # Cap it off with red
+#     ])
+#
+# N = 1000
+# array_dg = np.random.uniform(0, 10, size=(N, 2))
+# colors = np.random.uniform(-2, 2, size=(N,))
+# plt.scatter(array_dg[:, 0], array_dg[:, 1], c=colors, cmap=rvb)
+# plt.colorbar()
+# plt.show()

@@ -281,7 +281,7 @@ class AstroImage(object):
             shape2     = other.arr.shape
             if shape1 == shape2:
                 output     = self.copy()
-                
+
                 # Catch division by zero
                 other0Inds = np.where(other.arr == 0)
                 if len(other0Inds[0]) > 0:
@@ -290,7 +290,7 @@ class AstroImage(object):
 
                 # Do the division
                 output.arr = self.arr / other.arr
-                
+
             else:
                 print('Cannot divide images with different shapes')
                 return None
@@ -307,7 +307,7 @@ class AstroImage(object):
                 if len(self0Inds) > 0:
                     self0s = self.arr[self0Inds]
                     self.arr[self0Inds] = 1.0
-                
+
                 output.sigma = np.abs(output.arr *
                                np.sqrt((self.sigma/self.arr)**2 +
                                        (other.sigma/other.arr)**2))
@@ -371,18 +371,43 @@ class AstroImage(object):
         oneIsInt      = isinstance(other, int)
         oneIsFloat    = isinstance(other, float)
 
+        # Copy the self image for manipulation
+        output = self.copy()
+
+        # Check for stupid values
+        badVals = np.logical_not(np.isfinite(self.arr))
+        badInds = np.where(badVals)
+
+        # Replace stpud values with zeros
+        if len(badInds[0]) > 0:
+            output.arr[badInds] = 0.0
+
         if bothAreImages:
             shape1 = self.arr.shape
             shape2 = other.arr.shape
             if shape1 == shape2:
-                output     = self.copy()
-                output.arr = self.arr % other.arr
+                # Make a copy of the other image for manipulation
+                modulo = other.copy()
+
+                # Check for stupid values in the OTHER image
+                bad_O_Vals = np.logical_not(np.isfinite(modulo.arr))
+                bad_O_Inds = np.where(bad_O_Vals)
+
+                # Replace stpud values with zeros
+                if len(bad_O_Inds[0]) > 0:
+                    modulo.arr[badInds] = 0.0
+
+                output.arr = output.arr % modulo.arr
             else:
-                print('Cannot subtract images with different shapes')
+                print('Cannot modulate images with different shapes')
                 return None
         elif oneIsInt or oneIsFloat:
-            output = self.copy()
-            output.arr = self.arr % other
+            # Perform the actual modulation
+            output.arr = output.arr % other
+
+        # Return the bad values to nans (since that's really what they are)
+        if len(badInds[0]) > 0:
+            output.arr[badInds] = np.nan
 
         # Return the modulated image to the user
         return output
@@ -892,7 +917,19 @@ class AstroImage(object):
 
             # Build the appropriate weights for the averaging procedure
             if hasattr(self, 'sigma'):
-                wts    = self.sigma**(-2)
+                # Catch the zeros uncertainty points and null them out.
+                tmpSig = self.sigma.copy()
+                zeroInds = np.where(self.sigma == 0)
+                if len(zeroInds[0]) > 0:
+                    tmpSig[zeroInds] = 1.0
+
+                # Now actually compute the weights
+                wts    = tmpSig**(-2)
+
+                # Finally replace "zero-uncertainty" values with zero weight.
+                if len(zeroInds[0]) > 0:
+                    wts[zeroInds] = 0.0
+
             else:
                 wts = np.ones_like(self.arr)
 
@@ -1052,7 +1089,7 @@ class AstroImage(object):
 
         # Make a copy of the array and header
         cropArr = self.arr.copy()
-        
+
         # Perform the actual croping
         cropArr = cropArr[y1:y2, x1:x2]
 
