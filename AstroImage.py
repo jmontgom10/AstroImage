@@ -42,54 +42,58 @@ class AstroImage(object):
                 filename = os.path.join(os.getcwd(), filename[2:])
             try:
                 HDUlist     = fits.open(filename, do_not_scale_image_data=True)
-                self.header = HDUlist[0].header.copy()
-                floatFlag   = self.header['BITPIX'] < 0
-                numBits     = np.abs(self.header['BITPIX'])
-
-                # Determine the appropriate data type for the array.
-                if floatFlag:
-                    if numBits >= 64:
-                        dataType = np.float64
-                    else:
-                        dataType = np.float32
-                else:
-                    if numBits >= 64:
-                        dataType = np.int64
-                    elif numBits >= 32:
-                        dataType = np.int32
-                    else:
-                        dataType = np.int16
-
-                # Store the data as the correct data type
-                self.arr = HDUlist[0].data.astype(dataType, copy = False)
-
-                # If binning has been specified, then set it...
-                try:
-                    # Check that binning makes sense and store it if it does
-                    self.binning = tuple([int(di) for di in self.header['CRDELT*'].values()])
-                except:
-                    # No binning found, so call this (1x1) binning.
-                    self.binning = tuple(np.ones(self.arr.ndim).astype(int))
-                    for i, di in enumerate(self.binning):
-                        self.header['CRDELT'+str(i)] = di
-
-                # Loop through the HDUlist and check for a 'SIGMA' HDU
-                for HDU in HDUlist:
-                    if HDU.name == 'SIGMA':
-                        self.sigma = HDU.data
-
-                # Set the file type properties
-                self.filename = filename
-                self.dtype    = dataType
-                HDUlist.close()
-
-            # This the "UserWarning" error from Astropy in Windows
-            # should be ignored until further notice
-            except UserWarning:
-                pass
-
             except:
-                print('Possible error when loading file \n{0}'.format(filename))
+                raise FileNotFoundError('File {0} does not exist'.format(filename))
+
+            # If the file loaded properly, then proceed as usual
+            self.header = HDUlist[0].header.copy()
+            floatFlag   = self.header['BITPIX'] < 0
+            numBits     = np.abs(self.header['BITPIX'])
+
+            # Determine the appropriate data type for the array.
+            if floatFlag:
+                if numBits >= 64:
+                    dataType = np.float64
+                else:
+                    dataType = np.float32
+            else:
+                if numBits >= 64:
+                    dataType = np.int64
+                elif numBits >= 32:
+                    dataType = np.int32
+                else:
+                    dataType = np.int16
+
+            # Store the data as the correct data type
+            self.arr = HDUlist[0].data.astype(dataType, copy = False)
+
+            # If binning has been specified, then set it...
+            try:
+                # Check that binning makes sense and store it if it does
+                self.binning = tuple([int(di) for di in self.header['CRDELT*'].values()])
+            except:
+                # No binning found, so call this (1x1) binning.
+                self.binning = tuple(np.ones(self.arr.ndim).astype(int))
+                for i, di in enumerate(self.binning):
+                    self.header['CRDELT'+str(i)] = di
+
+            # Loop through the HDUlist and check for a 'SIGMA' HDU
+            for HDU in HDUlist:
+                if HDU.name == 'SIGMA':
+                    self.sigma = HDU.data
+
+            # Set the file type properties
+            self.filename = filename
+            self.dtype    = dataType
+            HDUlist.close()
+            #
+            # I do not seem to be able to catch the "userwarning"
+            # caused by loading FITS files into Windows.
+            #
+            # # This the "UserWarning" error from Astropy in Windows
+            # # should be ignored until further notice
+            # except UserWarning:
+            #     pass
 
     def __pos__(self):
         # Implements behavior for unary positive (e.g. +some_object)

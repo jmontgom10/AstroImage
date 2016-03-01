@@ -6,17 +6,42 @@ import sys
 from astropy.io import fits
 from wcsaxes import WCS
 from astropy.wcs.utils import pixel_to_skycoord
+from scipy.ndimage.filters import median_filter, gaussian_filter
+from photutils import daofind
+#from scipy.ndimage import generate_binary_structure, binary_dilation
+from astropy.stats import sigma_clipped_stats
+
 import pdb
 
-def stacked_average(imgList, clipSigma = 3.0):
+def combine_images(imgList, output = 'SUM',
+                   bkgClipSigma = 5.0, starClipSigma = 40.0, iters=5,
+                   effective_gain = None, read_noise = None):
     """Compute the median filtered mean of a stack of images.
     Standard deviation is computed from the variance of the stack of
     pixels.
 
     parameters:
-    imgList   -- a list containing Image class objects.
-    clipSigma -- the level at which to trim outliers (default = 3)
+    imgList        -- a list containing Image class objects.
+    output         -- ['SUM, 'MEAN']
+                      the desired array to be returned be the function.
+    bkgClipSigma   -- the level at which to trim outliers in the relatively
+                      flat background (default = 6.0)
+    starClipSigma  -- the level at which to trim outliers within a bright, star
+                      PSF region (default = 30.0). This number should be quite
+                      large because the naturally varrying PSF will cause large
+                      deviations, which should not actually be rejected.
+    effective_gain -- the conversion factor from image counts to electrons
+                      (units of electrons/count). This number will be used in
+                      estimating the Poisson contribution to the uncertainty
+                      in each pixel flux.
+    read_noise     -- the estimated read-noise contribution to the uncertainty
+                      of the flux in each pixel.
     """
+    # Check that a proper output has been requested
+    if not (output.upper() == 'MEAN' or output.upper() == 'SUM'):
+        raise ValueError('The the keyword "output" must be "SUM" or "MEAN"')
+
+    # Count the number of images to be combined
     numImg = len(imgList)
     print('\nEntered averaging method')
     if numImg > 1:
@@ -39,21 +64,110 @@ def stacked_average(imgList, clipSigma = 3.0):
         if numRows > ny: numRows = ny
         numSections = int(np.ceil(ny/numRows))
 
+        # Recompute the number of rows to be evenly spaced
+        numRows = int(np.ceil(ny/numSections))
+
+        # Compute "star mask" for this stack of images
+        print('\nComputing masks for bright sources')
+        # Grab binning
+        binX, binY = imgList[0].binning
+
+        # Compute kernel shape
+        medianKernShape = (np.ceil(9.0/binX), np.ceil(9.0/binY))
+
+        # Initalize a final star mask
+        starMask = np.zeros((ny,nx), dtype=int)
+
+        # Loop through the images and compute individual star masks
+        for imgNum, img in enumerate(imgList):
+            print('Building star mask for image {0:g}'.format(imgNum + 1))
+            # Grab the image array
+            thisArr = img.arr.copy()
+
+            # Replace bad values with zeros
+            badInds = np.where(np.logical_not(np.isfinite(thisArr)))
+            thisArr[badInds] = 0
+
+            # Filter the image
+            medImg = median_filter(thisArr, size = medianKernShape)
+
+            # get stddev of image background
+            mean, median, stddev = sigma_clipped_stats(thisArr)
+
+            # Look for deviates from the filter (positive values only)
+            starMask1 = np.logical_and(np.abs(thisArr - medImg) > 2.0*stddev,
+                                       thisArr > 0)
+
+            # Count the number of masked neighbors for each pixel
+            neighborCount = np.zeros_like(thisArr, dtype=int)
+            for dx in range(-1,2,1):
+                for dy in range(-1,2,1):
+                    neighborCount += np.roll(np.roll(starMask1, dy, axis=0),
+                                             dx, axis=1).astype(int)
+
+            # Find pixels with more than two masked neighbor (including self)
+            starMask1 = np.logical_and(starMask1, neighborCount > 2)
+
+          # gradArr   = generic_gradient_magnitude(thisArr, sobel)
+          # starMask1 = gradArr > 400 # Do I nueed to adjust for binning?
+
+            # Accumulate these pixels into the final star mask
+            starMask += starMask1
+
+        # Cleanup temporary variables
+        del thisArr, badInds#, medImg
+
+        # Compute final star mask based on which pixels were masked more than
+        # 10% of the time.
+        starMask = (starMask > np.ceil(0.1*numImg)).astype(float)
+
+        # Check that at least one star was detected (more than 15 pixels masked)
+        if np.sum(starMask) > 15:
+            # Now smooth the star mask with a gaussian to dialate it
+            starMask1 = gaussian_filter(starMask, (4, 4))
+
+            # Grab any pixels (and indices) above 0.05 value post-smoothing
+            starMask  = (starMask1 > 0.05)
+            numInStarPix = np.sum(starMask)
+
+            # Notify user how many "in-star pixels" were masked
+            print('Masked a total of {0} pixels'.format(numInStarPix))
+        else:
+            print('No pixels masked as "in-star" pixels')
+            starMask[:,:] = False
+
         # Compute the number of subsections and display stats to user
         print('\nAiming to fit each stack into {0:g}MB of memory'.format(memLimit))
         print('\nBreaking stack of {0:g} images into {1:g} sections of {2:g} rows'
-          .format(numImg, numSections, numRows))
+            .format(numImg, numSections, numRows))
 
         # Initalize an array to store the final averaged image
-        meanImg  = np.zeros((ny,nx))
-        sigmaImg = np.zeros((ny,nx))
+        outputImg = np.zeros((ny,nx))
 
-        # Compute the stacked average of each section
-        #
-        #
-        # TODO Check that this section averaging is working correctly!!!
-        #
-        #
+        # Determine if uncertainty should be handled at all
+        compute_uncertainty = ((effective_gain is not None) and
+                               (read_noise is not None))
+        # # Initalize a final uncertainty array
+        # if compute_uncertainty:
+        #     sigmaImg  = np.zeros((ny,nx))
+
+        # Compute the stacked output of each section
+        # Begin by computing how to iterate through sigma clipping
+        bkgSigmaStep   = 0.5
+        starSigmaStep  = 1.0
+        bkgSigmaStart  = bkgClipSigma - bkgSigmaStep*iters
+        starSigmaStart = starClipSigma - starSigmaStep*iters
+
+        # Double check that these values are legal
+        # (otherwise adjust sigmaStep values)
+        if bkgSigmaStart < 0.1:
+            bkgSigmaStart = 0.5
+            bkgSigmaStep  = (bkgClipSigma - bkgSigmaStart)/iters
+        if starSigmaStart < 30.0:
+            starSigmaStart = 30.0
+            starSigmaStep  = (starClipSigma - starSigmaStart)/iters
+
+        # Loop through each "row section" of the stack
         for thisSec in range(numSections):
             # Calculate the row numbers for this section
             thisRows = (thisSec*numRows,
@@ -65,10 +179,14 @@ def stacked_average(imgList, clipSigma = 3.0):
             for i in range(numImg):
                 stack[i,:,:] = imgList[i].arr[thisRows[0]:thisRows[1],:]
 
-            # Catch and mask any NaNs or Infs
+            # Catch and mask any NaNs or Infs (or -1e6 values)
             # before proceeding with the average
-            NaNsOrInfs  = np.logical_or(np.isnan(stack.data),
-                                        np.isinf(stack.data))
+            NaNsOrInfs  = np.logical_not(np.isfinite(stack.data))
+            stack.mask  = NaNsOrInfs
+            stack.data[np.where(NaNsOrInfs)] = -1e6
+            # Complement the NaNs search with bad pix value search
+            badPix      = stack < -1e5
+            NaNsOrInfs  = np.logical_or(NaNsOrInfs, badPix)
             stack.mask  = NaNsOrInfs
 
             # Now that the bad values have been saved,
@@ -83,51 +201,82 @@ def stacked_average(imgList, clipSigma = 3.0):
 
             # This loop will iterate until the mask converges to an
             # unchanging state, or until clipSigma is reached.
-            startSigma = 2.0
-            numLoops   = round((clipSigma - startSigma)/0.2) + 1
-            numPoints  = np.zeros((secRows, nx), dtype=int) + 16
-            scale      = np.zeros((secRows, nx)) + startSigma
-            for iLoop in range(numLoops):
-                print('\tProcessing section for sigma = {0:g}'.format(startSigma + 0.2*iLoop))
+            numPoints     = np.zeros((secRows, nx), dtype=int) + numImg
+            scale         = (np.logical_not(starMask)*bkgSigmaStart +
+                             starMask*starSigmaStart)
+            for iLoop in range(iters):
+                print('\tProcessing section for (bkgSigma, starSigma) = ({0:3.2g}, {1:3.2g})'.format(
+                    bkgSigmaStart + bkgSigmaStep*iLoop,
+                    starSigmaStart + starSigmaStep*iLoop))
+
                 # Loop through the stack, and find the outliers.
                 imgEstimate = np.ma.median(stack, axis = 0).data
                 stackSigma  = np.ma.std(stack, axis = 0).data
+
                 for j in range(numImg):
                     deviation       = np.absolute(stack.data[j,:,:] - imgEstimate)
                     outliers[j,:,:] = (deviation > scale*stackSigma)
 
-                # Save the outliers to the mask
+                # Save the newly computed outliers to the mask
                 stack.mask = np.logical_or(outliers, NaNsOrInfs)
                 # Save the number of unmasked points along AXIS
                 numPoints1 = numPoints
-                # Total up the new number of unmasked points...
-                numPoints  = np.sum(np.invert(stack.mask), axis = 0)
-                # Figure out which columns have improved results
-                nextScale  = (numPoints != numPoints1)
-                scale     += 0.2*nextScale
-                if np.sum(nextScale) == 0: break
+                # Total up the new number of unmasked pixels in each column
+                numPoints  = np.sum(np.logical_not(stack.mask), axis = 0)
+                # Figure out which pixel columns have improved results
+                nextScale  = (numPoints != numPoints1).astype(int)
 
-            # Compute the final mean image.
-            meanImg[thisRows[0]:thisRows[1],:] = np.mean(stack, axis = 0)
+                if np.sum(nextScale) == 0:
+                    # If there are no new data included, then break out of loop
+                    break
+                else:
+                    # Otherwise increment scale where new data are included
+                    scale = (scale +
+                             nextScale*np.logical_not(starMask)*bkgSigmaStep +
+                             nextScale*starMask*starSigmaStep)
 
-            # Compute the uncertainty in the mean
-            # Make sure that we don't divide by sqrt(-1)
-            singleSample = np.where(numPoints <= 1)
-            numPoints[singleSample] = 1
+            # Compute the final output image.
+            if output.upper() == 'SUM':
+                # Figure out where there is no data and prevent divide-by-zero
+                denominator = numPoints.copy()
+                noSamples   = numPoints == 0
+                denominator[np.where(noSamples)] = numImg
 
-            # Compute the uncertainty in the mean
-            tmpSigma = np.std(stack, axis = 0)/np.sqrt(numPoints - 1)
+                # Compute the apropriate scaling up for the sum total
+                scaleFactor = (float(numImg)/denominator.astype(float))
+                tmpOut      = scaleFactor*np.sum(stack, axis = 0)
 
-            # Be honest about singly sampled points
-            tmpSigma[singleSample] = np.NaN
+                # Replace the values where we have no data with "NaN"
+                tmpOut[np.where(noSamples)] = np.NaN
 
-            # Place the uncertainty in the sigmaImg variable
-            sigmaImg[thisRows[0]:thisRows[1],:] = tmpSigma
+            if output.upper() == 'MEAN':
+                # Compute the mean of the unmasked values
+                tmpOut = np.ma.mean(stack, axis = 0)
+
+            # Place the output and uncertainty in their holders
+            outputImg[thisRows[0]:thisRows[1],:] = tmpOut.data
 
         # Get ready to return an AstroImage object to the user
         outImg = imgList[0].copy()
-        outImg.arr = meanImg
-        outImg.sigma = sigmaImg
+        outImg.arr = outputImg
+
+        # Compute uncertainty and store values
+        if compute_uncertainty:
+            # Find those pixels where no flux seems to be detected
+            if output.upper() == 'SUM':
+                rn_mask = outputImg <= (numImg*read_noise/effective_gain)
+                sigmaImg = np.sqrt(np.abs(outputImg/effective_gain) +
+                    numPoints*(read_noise/effective_gain)**2)
+            if output.upper() == 'MEAN':
+                rn_mask = outputImg <= (read_noise/effective_gain)
+                sigmaImg = np.sqrt(np.abs(outputImg/effective_gain) +
+                    (read_noise/effective_gain)**2)
+
+            # apply read_noise floor to the dimmest points in the image
+            sigmaImg[rn_mask] = read_noise/effective_gain
+
+            # Store the output uncertainty in the sigma attribute
+            outImg.sigma = sigmaImg
 
         # Now that an average image has been computed,
         # Clear out the old astrometry
@@ -167,8 +316,17 @@ def astrometry(img, override = False):
         # If there was no 'WCSAXES' card, then set doAstrometry=True
         doAstrometry = True
 
-
     if doAstrometry:
+        # First test if the
+        proc = subprocess.Popen(['where', 'solve-field'],
+                                stdout=subprocess.PIPE,
+                                universal_newlines=True)
+        astrometryEXE = ((proc.communicate())[0]).rstrip()
+        proc.terminate()
+
+        if len(astrometryEXE) == 0:
+            raise OSError('Astrometry.net is not properly installed.')
+
         # Make a copy of the image to be returned
         img1 = img.copy()
 
@@ -284,15 +442,15 @@ def astrometry(img, override = False):
             rmProc.terminate()
 
             # If everything has worked, then return a True success value
-            return img1
+            return img1, True
         else:
             # If there was no WCS, then return a False success value
-            return None
+            return None, False
     else:
         print('Astrometry for {0:s} already solved.'.
           format(os.path.basename(img.filename)))
 
-def align_stack(imgList, padding=0, mode='wcs', subPixel=False):
+def align_images(imgList, padding=0, mode='wcs', subPixel=False):
     """A method to align the a whole stack of images using the astrometry
     from each header to shift an INTEGER number of pixels.
 
