@@ -13,7 +13,7 @@ from astropy.stats import sigma_clipped_stats
 
 import pdb
 
-def combine_images(imgList, output = 'SUM',
+def combine_images(imgList, output = 'MEAN',
                    bkgClipSigma = 5.0, starClipSigma = 40.0, iters=5,
                    effective_gain = None, read_noise = None):
     """Compute the median filtered mean of a stack of images.
@@ -22,7 +22,7 @@ def combine_images(imgList, output = 'SUM',
 
     parameters:
     imgList        -- a list containing Image class objects.
-    output         -- ['SUM, 'MEAN']
+    output         -- [MEAN', 'SUM']
                       the desired array to be returned be the function.
     bkgClipSigma   -- the level at which to trim outliers in the relatively
                       flat background (default = 6.0)

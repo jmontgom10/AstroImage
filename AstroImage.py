@@ -1544,7 +1544,8 @@ class AstroImage(object):
                 starPatch = comboImg.arr[np.where(starDist < 10)]
 
                 # Test if there are bad pixels within 10 from the star
-                numBadPix = np.sum(np.logical_or(starPatch > 12e3, starPatch < -100))
+                # numBadPix = np.sum(np.logical_or(starPatch > 12e3, starPatch < -100))
+                numBadPix = np.sum(starPatch < -100)
 
                 # Append the test result to the "badStars" list
                 badStars.append(numBadPix > 0)
