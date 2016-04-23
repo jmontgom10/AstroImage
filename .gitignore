@@ -1,8 +1,14 @@
+# Ignore my test files
+test*
+
+# Ignore any downloaded or produced *.fits files
+*.fit
+*.fits
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
-test*
 
 # Windows image file caches
 Thumbs.db

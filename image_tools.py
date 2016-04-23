@@ -1,20 +1,210 @@
 import numpy as np
 import psutil
+import warnings
 import subprocess
 import os
 import sys
 from astropy.io import fits
 from wcsaxes import WCS
 from astropy.wcs.utils import pixel_to_skycoord
+from scipy.odr import *
+from scipy.ndimage import map_coordinates
 from scipy.ndimage.filters import median_filter, gaussian_filter
-from photutils import daofind
-#from scipy.ndimage import generate_binary_structure, binary_dilation
-from astropy.stats import sigma_clipped_stats
+from photutils import daofind, Background, detect_sources
+from astropy.stats import sigma_clipped_stats, gaussian_fwhm_to_sigma
+from astropy.modeling import models, fitting
+from astropy.convolution import Gaussian2DKernel
+from astropy.coordinates import SkyCoord, ICRS
 
+# Import AstroImage in order to check types...
+import AstroImage
+
+# Import pdb for debugging
 import pdb
+
+def align_images(imgList, padding=0, mode='wcs', subPixel=False, offsets=False):
+    """A method to align the a whole stack of images using the astrometry
+    from each header to shift an INTEGER number of pixels.
+
+    parameters:
+    imgList -- the list of image to be aligned.
+    padding -- the value to use for padding the edges of the aligned
+               images. Common values are 0 and NaN.
+    mode    -- ['wcs' | 'cross_correlate'] the method to be used for
+               aligning the images in imgList. 'wcs' uses the astrometry
+               in the header while 'cross_correlation' selects a reference
+               image and computes image offsets using cross-correlation.
+    """
+    # Catch the case where a list of images was not passed
+    if not isinstance(imgList, list):
+        raise ValueError('imgList variable must be a list of images')
+
+    # Catch the case where imgList has only one image
+    if len(imgList) <= 1:
+        print('Must have more than one image in the list to be aligned')
+        return imgList[0]
+
+    # Catch the case where imgList has only two images
+    if len(imgList) <= 2:
+        return imgList[0].align(imgList[1], mode=mode)
+
+    #**********************************************************************
+    # Get the offsets using whatever mode was selected
+    #**********************************************************************
+    if mode == 'wcs':
+        # Compute the relative position of each of the images in the stack
+        wcs1      = WCS(imgList[0].header)
+        x1, y1    = imgList[0].arr.shape[1]//2, imgList[0].arr.shape[0]//2
+
+        # Append the first image coordinates to the list
+        shapeList = [imgList[0].arr.shape]
+        imgXpos   = [float(x1)]
+        imgYpos   = [float(y1)]
+
+        # Convert pixels to sky coordinates
+        skyCoord1 = pixel_to_skycoord(x1, y1, wcs1,
+            origin=0, mode='wcs', cls=None)
+
+        # Loop through all the remaining images in the list
+        # Grab the WCS of the alignment image and convert back to pixels
+        for img in imgList[1:]:
+            wcs2   = WCS(img.header)
+            x2, y2 = wcs2.all_world2pix(skyCoord1.ra, skyCoord1.dec, 0)
+            shapeList.append(img.arr.shape)
+            imgXpos.append(float(x2))
+            imgYpos.append(float(y2))
+
+    elif mode == 'cross_correlate':
+        # Use the first image in the list as the "reference image"
+        refImg = imgList[0]
+
+        # Initalize empty lists for storing offsets and shapes
+        shapeList = [refImg.arr.shape]
+        imgXpos   = [0.0]
+        imgYpos   = [0.0]
+
+        # Loop through the rest of the images.
+        # Use cross-correlation to get relative offsets,
+        # and accumulate image shapes
+        for img in imgList[1:]:
+            dx, dy = refImg.align(img, mode='cross_correlate', offsets=True)
+            shapeList.append(img.arr.shape)
+            imgXpos.append(-dx)
+            imgYpos.append(-dy)
+    else:
+        print('mode not recognized')
+        pdb.set_trace()
+
+    # Make sure all the images are the same size
+    shapeList = np.array(shapeList)
+    nyFinal   = np.max(shapeList[:,0])
+    nxFinal   = np.max(shapeList[:,1])
+
+    # Compute the median pointing
+    x1 = np.median(imgXpos)
+    y1 = np.median(imgYpos)
+
+    # Compute the relative pointings from the median position
+    dx = x1 - np.array(imgXpos)
+    dy = y1 - np.array(imgYpos)
+
+    # Compute the each distance from the median pointing
+    imgDist   = np.sqrt(dx**2.0 + dy**2.0)
+    centerImg = np.where(imgDist == np.min(imgDist))[0][0]
+
+    # Set the "reference image" to the one closest to the median pointing
+    x1, y1 = imgXpos[centerImg], imgYpos[centerImg]
+
+    # Recompute the offsets from the reference image
+    # (add an 'epsilon' shift to make sure ALL images get shifted
+    # at least a tiny bit... this guarantees the images all get convolved
+    # by the pixel shape.)
+    epsilon = 1e-4
+    dx = x1 - np.array(imgXpos) + epsilon
+    dy = y1 - np.array(imgYpos) + epsilon
+
+    # Check for integer shifts
+    for dx1, dy1 in zip(dx, dy):
+        if dx1.is_integer(): pdb.set_trace()
+        if dy1.is_integer(): pdb.set_trace()
+
+    # Compute the total image padding necessary to fit the whole stack
+    padLf     = np.int(np.round(np.abs(np.min(dx))))
+    padRt     = np.int(np.round(np.max(dx)))
+    padBot    = np.int(np.round(np.abs(np.min(dy))))
+    padTop    = np.int(np.round(np.max(dy)))
+    totalPadX = padLf  + padRt
+    totalPadY = padBot + padTop
+
+    # Test for sanity
+    if ((totalPadX > np.max(shapeList[:,1])) or
+        (totalPadY > np.max(shapeList[:,0]))):
+        print('there is a problem with the alignment')
+        pdb.set_trace()
+
+    # compute padding
+    padX     = (padLf, padRt)
+    padY     = (padBot, padTop)
+    padWidth = np.array((padY,  padX), dtype=np.int)
+
+    # Create an empty list to store the aligned images
+    alignedImgList = []
+
+    # Loop through each image and pad it accordingly
+    for i in range(len(imgList)):
+        # Make a copy of the image
+        newImg     = imgList[i].copy()
+
+        # Check if this image needs an initial padding to match final size
+        if (nyFinal, nxFinal) != imgList[i].arr.shape:
+            padX       = nxFinal - imgList[i].arr.shape[1]
+            padY       = nyFinal - imgList[i].arr.shape[0]
+            initialPad = ((0, padY), (0, padX))
+            newImg.pad(initialPad, mode='constant', constant_values=padding)
+
+        # Apply the more padding to prevent data loss in final shift
+        newImg.pad(padWidth, mode='constant', constant_values=padding)
+
+        # Shift the images to their final positions
+        if subPixel:
+            # If sub-pixel shifting was requested, then use it
+            shiftX = dx[i]
+            shiftY = dy[i]
+        else:
+            # otherwise just take the nearest integer shifting offset
+            shiftX = np.int(np.round(dx[i]))
+            shiftY = np.int(np.round(dy[i]))
+
+        # Actually apply the shift (along with the error-propagation)
+        newImg.shift(shiftX, shiftY, padding=padding)
+
+        # Check that the header is already correct!
+        # Update the header information
+        newImg.header['CRPIX1'] = newImg.header['CRPIX1'] + padWidth[1][0]
+        newImg.header['CRPIX2'] = newImg.header['CRPIX2'] + padWidth[0][0]
+        newImg.header['NAXIS1'] = newImg.arr.shape[1]
+        newImg.header['NAXIS2'] = newImg.arr.shape[0]
+
+        # Append the shifted image
+        alignedImgList.append(newImg)
+
+    # If offsets were also requested, return them as a tupple after image list
+    if offsets == True:
+        # Build the tupple of offsets
+        if subPixel:
+            # (Use floats if subpixels shifts were requested)
+            offs = (dy, dx)
+        else:
+            # (Use rounded integers if integer shifts were requested)
+            offs = ((dy.round()).astype(np.int), (dx.round()).astype(np.int))
+
+        return alignedImgList, offs
+    else:
+        return alignedImgList
 
 def combine_images(imgList, output = 'MEAN',
                    bkgClipSigma = 5.0, starClipSigma = 40.0, iters=5,
+                   weighted_mean = False,
                    effective_gain = None, read_noise = None):
     """Compute the median filtered mean of a stack of images.
     Standard deviation is computed from the variance of the stack of
@@ -25,11 +215,15 @@ def combine_images(imgList, output = 'MEAN',
     output         -- [MEAN', 'SUM']
                       the desired array to be returned be the function.
     bkgClipSigma   -- the level at which to trim outliers in the relatively
-                      flat background (default = 6.0)
+                      flat background (default = 5.0)
     starClipSigma  -- the level at which to trim outliers within a bright, star
-                      PSF region (default = 30.0). This number should be quite
+                      PSF region (default = 40.0). This number should be quite
                       large because the naturally varrying PSF will cause large
                       deviations, which should not actually be rejected.
+    weighted_mean  -- this flag indicates whether to use the uncertainties
+                      contained in each AstroImage instance to compute a final
+                      weighted average image. If marked as True, then each image
+                      in the imgList is supposed
     effective_gain -- the conversion factor from image counts to electrons
                       (units of electrons/count). This number will be used in
                       estimating the Poisson contribution to the uncertainty
@@ -40,6 +234,12 @@ def combine_images(imgList, output = 'MEAN',
     # Check that a proper output has been requested
     if not (output.upper() == 'MEAN' or output.upper() == 'SUM'):
         raise ValueError('The the keyword "output" must be "SUM" or "MEAN"')
+
+    if weighted_mean == True:
+        # Check that all the images have a sigma array
+        for img in imgList:
+            if not hasattr(img, 'sigma'):
+                raise ValueError('All images must have a sigma array')
 
     # Count the number of images to be combined
     numImg = len(imgList)
@@ -80,7 +280,7 @@ def combine_images(imgList, output = 'MEAN',
 
         # Loop through the images and compute individual star masks
         for imgNum, img in enumerate(imgList):
-            print('Building star mask for image {0:g}'.format(imgNum + 1))
+            print('Building star mask for image {0:g} of {1:g}'.format(imgNum + 1, numImg), end='\r')
             # Grab the image array
             thisArr = img.arr.copy()
 
@@ -108,14 +308,11 @@ def combine_images(imgList, output = 'MEAN',
             # Find pixels with more than two masked neighbor (including self)
             starMask1 = np.logical_and(starMask1, neighborCount > 2)
 
-          # gradArr   = generic_gradient_magnitude(thisArr, sobel)
-          # starMask1 = gradArr > 400 # Do I nueed to adjust for binning?
-
             # Accumulate these pixels into the final star mask
             starMask += starMask1
 
         # Cleanup temporary variables
-        del thisArr, badInds#, medImg
+        del thisArr, badInds, medImg
 
         # Compute final star mask based on which pixels were masked more than
         # 10% of the time.
@@ -131,7 +328,7 @@ def combine_images(imgList, output = 'MEAN',
             numInStarPix = np.sum(starMask)
 
             # Notify user how many "in-star pixels" were masked
-            print('Masked a total of {0} pixels'.format(numInStarPix))
+            print('\n\nMasked a total of {0} pixels'.format(numInStarPix))
         else:
             print('No pixels masked as "in-star" pixels')
             starMask[:,:] = False
@@ -143,6 +340,10 @@ def combine_images(imgList, output = 'MEAN',
 
         # Initalize an array to store the final averaged image
         outputImg = np.zeros((ny,nx))
+
+        if weighted_mean == True:
+            # Initalize an array to store the uncertainty of the weighted mean
+            outputSig = np.ones((ny, nx))
 
         # Determine if uncertainty should be handled at all
         compute_uncertainty = ((effective_gain is not None) and
@@ -178,6 +379,12 @@ def combine_images(imgList, output = 'MEAN',
             stack   = np.ma.zeros((numImg, secRows, nx), dtype = dataType)
             for i in range(numImg):
                 stack[i,:,:] = imgList[i].arr[thisRows[0]:thisRows[1],:]
+
+            # Stack the selection region of the sigma arrays if needed
+            if weighted_mean == True:
+                stackSig = np.ma.zeros((numImg, secRows, nx), dtype = dataType)
+                for i in range(numImg):
+                    stackSig[i,:,:] = imgList[i].sigma[thisRows[0]:thisRows[1],:]
 
             # Catch and mask any NaNs or Infs (or -1e6 values)
             # before proceeding with the average
@@ -236,35 +443,55 @@ def combine_images(imgList, output = 'MEAN',
                              nextScale*starMask*starSigmaStep)
 
             # Compute the final output image.
-            if output.upper() == 'SUM':
-                # Figure out where there is no data and prevent divide-by-zero
-                denominator = numPoints.copy()
-                noSamples   = numPoints == 0
-                denominator[np.where(noSamples)] = numImg
+            if weighted_mean == True:
+                # Compute as a weighted mean of the stack
+                stackSig.mask = stack.mask.copy()
+                weights       = 1.0/(stackSig**2.0)
+                weightedSum   = np.ma.sum(weights*stack, axis = 0)
+                sumOfWeights  = np.ma.sum(weights, axis = 0)
+                tmpOut        = weightedSum/sumOfWeights
 
-                # Compute the apropriate scaling up for the sum total
-                scaleFactor = (float(numImg)/denominator.astype(float))
-                tmpOut      = scaleFactor*np.sum(stack, axis = 0)
+                # also compute this portion of the uncertainty image
+                tmpSig = np.sqrt(1.0/sumOfWeights)
+            else:
+                # Compute as unweighted mean or sum
+                if output.upper() == 'SUM':
+                    # Figure out where there is no data and prevent divide-by-zero
+                    denominator = numPoints.copy()
+                    noSamples   = numPoints == 0
+                    denominator[np.where(noSamples)] = numImg
 
-                # Replace the values where we have no data with "NaN"
-                tmpOut[np.where(noSamples)] = np.NaN
+                    # Compute the apropriate scaling up for the sum total
+                    scaleFactor = (float(numImg)/denominator.astype(float))
+                    tmpOut      = scaleFactor*np.sum(stack, axis = 0)
 
-            if output.upper() == 'MEAN':
-                # Compute the mean of the unmasked values
-                tmpOut = np.ma.mean(stack, axis = 0)
+                    # Replace the values where we have no data with "NaN"
+                    tmpOut[np.where(noSamples)] = np.NaN
+
+                if output.upper() == 'MEAN':
+                    # Compute the mean of the unmasked values
+                    tmpOut = np.ma.mean(stack, axis = 0)
 
             # Place the output and uncertainty in their holders
             outputImg[thisRows[0]:thisRows[1],:] = tmpOut.data
+
+            # Use the weighted uncertainty if requested
+            if weighted_mean == True:
+                outputSig[thisRows[0]:thisRows[1],:] = tmpSig.data
 
         # Get ready to return an AstroImage object to the user
         outImg = imgList[0].copy()
         outImg.arr = outputImg
 
+        # Include the weighted uncertainty if requested
+        if weighted_mean == True:
+            outImg.sigma = outputSig
+
         # Compute uncertainty and store values
         if compute_uncertainty:
             # Find those pixels where no flux seems to be detected
             if output.upper() == 'SUM':
-                rn_mask = outputImg <= (numImg*read_noise/effective_gain)
+                rn_mask = (outputImg <= (numImg*read_noise/effective_gain))
                 sigmaImg = np.sqrt(np.abs(outputImg/effective_gain) +
                     numPoints*(read_noise/effective_gain)**2)
             if output.upper() == 'MEAN':
@@ -450,177 +677,308 @@ def astrometry(img, override = False):
         print('Astrometry for {0:s} already solved.'.
           format(os.path.basename(img.filename)))
 
-def align_images(imgList, padding=0, mode='wcs', subPixel=False):
-    """A method to align the a whole stack of images using the astrometry
-    from each header to shift an INTEGER number of pixels.
+def build_starMask(arr, sigmaThresh = 2.0, neighborThresh = 2, kernelSize = 9):
+    '''This function will idenify in-star pixels using a local median-filtered.
+    This should work for both clean (e.g. PRISM) images and dirty (e.g. Mimir)
+    images. The usual "detect_sources" method will identify dirty features as
+    false positives, so this method is preferable.
+    '''
 
-    parameters:
-    imgList -- the list of image to be aligned.
-    padding -- the value to use for padding the edges of the aligned
-               images. Common values are 0 and NaN.
-    mode    -- ['wcs' | 'cross_correlate'] the method to be used for
-               aligning the images in imgList. 'wcs' uses the astrometry
-               in the header while 'cross_correlation' selects a reference
-               image and computes image offsets using cross-correlation.
-    """
+    # Compute kernel shape
+    medianKernShape = (kernelSize, kernelSize)
 
-    # Catch the case where a list of images was not passed
-    if not isinstance(imgList, list):
-        raise ValueError('imgList variable must be a list of images')
+    # Filter the image
+    medImg = median_filter(arr, size = medianKernShape)
 
-    # Catch the case where imgList has only one image
-    if len(imgList) <= 1:
-        print('Must have more than one image in the list to be aligned')
-        return imgList[0]
+    # get stddev of image background
+    mean, median, stddev = sigma_clipped_stats(arr)
 
-    # Catch the case where imgList has only two images
-    if len(imgList) <= 2:
-        return imgList[0].align(imgList[1], mode=mode)
+    # Look for deviates from the filter (positive values only)
+    starMask = np.logical_and(np.abs(arr - medImg) > sigmaThresh*stddev,
+                               arr > 0)
+    # Count the number of masked neighbors for each pixel
+    neighborCount = np.zeros_like(arr, dtype=int)
+    for dx in range(-1,2,1):
+        for dy in range(-1,2,1):
+            neighborCount += np.roll(np.roll(starMask, dy, axis=0),
+                                     dx, axis=1).astype(int)
 
-    #**********************************************************************
-    # Get the offsets using whatever mode was selected
-    #**********************************************************************
-    if mode == 'wcs':
-        # Compute the relative position of each of the images in the stack
-        wcs1      = WCS(imgList[0].header)
-        x1, y1    = imgList[0].arr.shape[1]//2, imgList[0].arr.shape[0]//2
+    # Subtract the self-counting pixel count
+    neighborCount -= 1
 
-        # Append the first image coordinates to the list
-        shapeList = [imgList[0].arr.shape]
-        imgXpos   = [float(x1)]
-        imgYpos   = [float(y1)]
+    # Find pixels with more than two masked neighbor (including self)
+    starMask = np.logical_and(starMask, neighborCount > neighborThresh)
 
-        # Convert pixels to sky coordinates
-        skyCoord1 = pixel_to_skycoord(x1, y1, wcs1,
-            origin=0, mode='wcs', cls=None)
+    return starMask
 
-        # Loop through all the remaining images in the list
-        # Grab the WCS of the alignment image and convert back to pixels
-        for img in imgList[1:]:
-            wcs2   = WCS(img.header)
-            x2, y2 = wcs2.all_world2pix(skyCoord1.ra, skyCoord1.dec, 0)
-            shapeList.append(img.arr.shape)
-            imgXpos.append(float(x2))
-            imgYpos.append(float(y2))
+# def model_bad_pixels(arr):
+#     '''This function will identify bad pixels replace their values with an
+#     estimate based on the local values. The replacement algorithm first
+#     identifies if the pixel is (1) near an image edge, (2) in a star, or (3)
+#     anywhere else.
+#     '''
+#     if len(arr.shape) > 2:
+#         raise ValueError('arr must be a 2-dimensional array')
+#
+#     # Grab the array shape
+#     ny, nx = arr.shape
+#
+#     # Generate a 2D grid of pixel positions
+#     yy, xx = np.mgrid[0:ny, 0:nx]
+#
+#     # Copy the array for manipulation
+#     outArr = arr.copy()
+#
+#     # Identify bad pixels as those more than 7 sigma below the median value or
+#     # non-finite pixels.
+#     mean, median, stddev = sigma_clipped_stats(outArr.flatten())
+#     badPix = np.logical_or((np.abs(outArr - median)/stddev > 7.0),
+#                            np.logical_not(np.isfinite(outArr)))
+#     if np.sum(badPix) > 0:
+#         # Locate the bad pixels
+#         badY, badX = np.where(badPix)
+#
+#         # Build a goodPix array
+#         goodPix = np.logical_not(badPix)
+#     else:
+#         # No bad pixels found, so simply return array to user
+#         return arr
+#
+#     # Build an initial repair image (from medial filter). The pixel values from
+#     # this image will be used to fill in local bad pixels (if they are not in)
+#     # a star.
+#     arr1 = median_filter(outArr, size=(9,9))
+#
+#     # Loop through the bad pixels
+#     for iy, ix in zip(badY, badX):
+#         # Check for edge pixels
+#         # lfEdge = (ix <= 2)
+#         # rtEdge = (ix >= (nx - 3))
+#         # btEdge = (iy <= 5)
+#         # tpEdge = (iy >= (ny - 6))
+#         lfEdge = (ix <= 12)
+#         rtEdge = (ix >= (nx - 13))
+#         btEdge = (iy <= 15)
+#         tpEdge = (iy >= (ny - 16))
+#         inEdge = lfEdge or rtEdge or btEdge or tpEdge
+#
+#         ################## EDGE PIXELS ##################
+#         # If the pixel is in the edge, then replace with nearby median estimate
+#         if inEdge:
+#             sampleX = ix + 15*int(lfEdge) - 15*int(rtEdge)
+#             sampleY = iy + 15*int(btEdge) - 15*int(tpEdge)
+#             outArr[iy, ix] = arr1[sampleY, sampleX]
+#
+#             # Now skip to the next pixel
+#             continue
+#
+#         ################## STAR PIXELS ##################
+#         # Check for star pixels by checking for a negative slope in flux v. dist
+#         # First compute the distance to each pixel
+#         dist = np.sqrt((xx - ix)**2 + (yy - iy)**2)
+#
+#         # Drop bad pixels.
+#         goodPixInds = np.where(goodPix)
+#         goodDist = dist[goodPixInds]
+#         goodFlux = arr[goodPixInds]
+#
+#         # Now cull the list to the nearest 100 pixels
+#         distSortInds = (goodDist.argsort())[0:100]
+#         dist = goodDist[distSortInds]
+#         flux = goodFlux[distSortInds]
+#
+#         # Fit these distance and flux values with a line
+#         # Set up ODR with the model and data.
+#         lineFunc = lambda B, x: B[0]*x + B[1]
+#         lineModel = Model(lineFunc)
+#         data = Data(dist, flux)
+#
+#         # Perform the ODR fitting
+#         odr     = ODR(data, lineModel, beta0=[0.0, 0.0])
+#         lineFit = odr.run()
+#
+#         # Check the slope and significance of the slope
+#         if (lineFit.beta[0] / lineFit.sd_beta[0]) < -5.0:
+#             ######### WE ARE ON A STAR! #########
+#             # Determine the nearby pixel boundaries to use
+#             if ix < 9:
+#                 lf = 0
+#                 rt = 2*9 + 1
+#             elif ix > (nx - 10):
+#                 rt = nx - 1
+#                 lf = rt - 2*9 - 1
+#             else:
+#                 lf = ix - 9
+#                 rt = lf + 2*9 + 1
+#
+#             if iy < 9:
+#                 bt = 0
+#                 tp = 2*9 + 1
+#             elif iy > (ny - 10):
+#                 tp = ny - 1
+#                 bt = tp - 2*9 - 1
+#             else:
+#                 bt = iy - 9
+#                 tp = bt + 2*9 + 1
+#
+#             # Cut out a subarray and fit a 2d gaussian
+#             subArr = outArr[bt:tp, lf:rt]
+#             subBadPix = badPix[bt:tp, lf:rt]
+#
+#             # Check for nearby bad pixels and replace them with local medians
+#             if np.sum(subBadPix) > 0:
+#                 subMedian = arr1[bt:tp, lf:rt]
+#                 badInds   = np.where(subBadPix)
+#                 subArr[badInds] = subMedian[badInds]
+#
+#             # Initalize a gaussian model to fit to the local data
+#             # Compute the flux centroid
+#             subYY, subXX = yy[bt:tp, lf:rt], xx[bt:tp, lf:rt]
+#             mean_x = np.sum(subArr*subXX)/np.sum(subArr)
+#             mean_y = np.sum(subArr*subYY)/np.sum(subArr)
+#
+#             # Estimate the amplitude as the local maximum
+#             amp = np.max(subArr)
+#
+#             # Initalize the model
+#             gauss_init = models.Gaussian2D(
+#                 amplitude = amp,
+#                 x_mean = mean_x,
+#                 y_mean = mean_y,
+#                 x_stddev = 4.5,
+#                 y_stddev = 4.5,
+#                 theta = 0.0)
+#
+#             # Initalize the least square fitter
+#             gauss_fitter = fitting.LevMarLSQFitter()
+#
+#             # Perform the fit
+#             with warnings.catch_warnings():
+#                 warnings.filterwarnings('error')
+#                 try:
+#                     starFit = gauss_fitter(gauss_init, subXX, subYY, subArr)
+#                     if ix > 100 and iy > 100:
+#                         print(ix, iy)
+#                         pdb.set_trace()
+#
+#                     # Replace the bad pixel with the fitted value
+#                     outArr[iy, ix] = starFit(ix, iy)
+#                     # warnings.warn(Warning())
+#                 except Warning:
+#                     print('raised!')
+#                     # pdb.set_trace()
+#
+#
+#
+#         continue
+#
+#         ################## OTHER PIXELS ##################
+#         # Fill in remaining pixels with local median.
 
-    elif mode == 'cross_correlate':
-        # Use the first image in the list as the "reference image"
-        refImg = imgList[0]
 
-        # Initalize empty lists for storing offsets and shapes
-        shapeList = [refImg.arr.shape]
-        imgXpos   = [0.0]
-        imgYpos   = [0.0]
+def inpaint_nans(arr, mask=None):
+    '''This function will take an numpy array object, inpaint the bad (NaN)
+    pixels (or the pixels specified by the mask keyword argument if that is
+    provided), and return a copy of the AstroImage with its reparied pixels
 
-        # Loop through the rest of the images.
-        # Use cross-correlation to get relative offsets,
-        # and accumulate image shapes
-        for img in imgList[1:]:
-            dx, dy = refImg.align(img, mode='cross_correlate', offsets=True)
-            shapeList.append(img.arr.shape)
-            imgXpos.append(-dx)
-            imgYpos.append(-dy)
-    else:
-        print('mode not recognized')
-        pdb.set_trace()
+    inputs:
+    arr  -- a numpy ndarray instance which needs repairs
+    mask -- a boolean array containing True at pixels to be inpainted and False
+    everywhere else.
 
-    # Make sure all the images are the same size
-    shapeList = np.array(shapeList)
-    nyFinal   = np.max(shapeList[:,0])
-    nxFinal   = np.max(shapeList[:,1])
+    returns:
+    outImg -- an AstroImage instance with repaired pixels
+    '''
 
-    # Compute the median pointing
-    x1 = np.median(imgXpos)
-    y1 = np.median(imgYpos)
-
-    # Compute the relative pointings from the median position
-    dx = x1 - np.array(imgXpos)
-    dy = y1 - np.array(imgYpos)
-
-    # Compute the each distance from the median pointing
-    imgDist   = np.sqrt(dx**2.0 + dy**2.0)
-    centerImg = np.where(imgDist == np.min(imgDist))[0][0]
-
-    # Set the "reference image" to the one closest to the median pointing
-    x1, y1 = imgXpos[centerImg], imgYpos[centerImg]
-
-    # Recompute the offsets from the reference image
-    # (add an 'epsilon' shift to make sure ALL images get shifted
-    # at least a tiny bit... this guarantees the images all get convolved
-    # by the pixel shape.)
-    epsilon = 1e-4
-    dx = x1 - np.array(imgXpos) + epsilon
-    dy = y1 - np.array(imgYpos) + epsilon
-
-    # Check for integer shifts
-    for dx1, dy1 in zip(dx, dy):
-        if dx1.is_integer(): pdb.set_trace()
-        if dy1.is_integer(): pdb.set_trace()
-
-    # Compute the total image padding necessary to fit the whole stack
-    padLf     = np.int(np.round(np.abs(np.min(dx))))
-    padRt     = np.int(np.round(np.max(dx)))
-    padBot    = np.int(np.round(np.abs(np.min(dy))))
-    padTop    = np.int(np.round(np.max(dy)))
-    totalPadX = padLf  + padRt
-    totalPadY = padBot + padTop
-
-    # Test for sanity
-    if ((totalPadX > np.max(shapeList[:,1])) or
-        (totalPadY > np.max(shapeList[:,0]))):
-        print('there is a problem with the alignment')
-        pdb.set_trace()
-
-    # compute padding
-    padX     = (padLf, padRt)
-    padY     = (padBot, padTop)
-    padWidth = np.array((padY,  padX), dtype=np.int)
-
-    # Create an empty list to store the aligned images
-    alignedImgList = []
-
-    # Loop through each image and pad it accordingly
-    for i in range(len(imgList)):
-        # Make a copy of the image
-        newImg     = imgList[i].copy()
-
-        # Check if this image needs an initial padding to match final size
-        if (nyFinal, nxFinal) != imgList[i].arr.shape:
-            padX       = nxFinal - imgList[i].arr.shape[1]
-            padY       = nyFinal - imgList[i].arr.shape[0]
-            initialPad = ((0, padY), (0, padX))
-            newImg.pad(initialPad, mode='constant', constant_values=padding)
-
-        # Apply the more padding to prevent data loss in final shift
-        newImg.pad(padWidth, mode='constant', constant_values=padding)
-
-        # Shift the images to their final positions
-        if subPixel:
-            # If sub-pixel shifting was requested, then use it
-            shiftX = dx[i]
-            shiftY = dy[i]
+    # Test if the mask keyword argument was provided.
+    if not isinstance(mask, type(None)):
+        # If the mask has been defined, check if it's an array
+        if isinstance(mask, np.ndarray):
+            # If the mask is an array, check if it's a bool
+            if mask.dtype == bool:
+                # If the mask is a bool, check that it has the right size
+                if arr.shape == mask.shape:
+                    # Everything seems to be in order, so don't panic.
+                    # Just make a copy of the mask to be used for inpainting.
+                    badPix = mask.copy()
+                else:
+                    # If mask shape doesn't match image shape, then raise error
+                    raise ValueError('mask must have same shape as arr.')
+            else:
+                # If mask is not bool, then raise an error
+                raise ValueError('mask keyword argument must by type bool')
         else:
-            # otherwise just take the nearest integer shifting offset
-            shiftX = np.int(np.round(dx[i]))
-            shiftY = np.int(np.round(dy[i]))
+            # If mask is not an array, then raise an error
+            raise ValueError('mask keyword argument must be an ndarray')
+    else:
+        # If there is no mask provided, then simply make one out of the NaNs
+        badPix = np.isnan(arr)
 
-        # Actually apply the shift (along with the error-propagation)
-        newImg.shift(shiftX, shiftY)
+    # If no pixels were selected for inpainting, just return a copy of the image
+    if np.sum(badPix) == 0:
+        return arr.copy()
 
-        # Check that the header is already correct!
-        # Update the header information
-        newImg.header['CRPIX1'] = newImg.header['CRPIX1'] + padWidth[1][0]
-        newImg.header['CRPIX2'] = newImg.header['CRPIX2'] + padWidth[0][0]
-        newImg.header['NAXIS1'] = newImg.arr.shape[1]
-        newImg.header['NAXIS2'] = newImg.arr.shape[0]
+    # First get the indices for the good and bad pixels
+    goodInds = np.where(np.logical_not(badPix))
+    badInds  = np.where(badPix)
 
-        # Append the shifted image
-        alignedImgList.append(newImg)
+    # Replace badInds with image median value
+    repairedArr1 = arr.copy()
+    mean, median, stddev = sigma_clipped_stats(repairedArr1[goodInds])
+    repairedArr1[badInds] = median
 
-    return alignedImgList
+
+    # # On first pass, smooth the input image with kernel ~5% of image size.
+    # ny, nx       = arr.shape
+    # kernelSize   = np.int(np.round(0.05*np.sqrt(nx*ny)))
+    # repairedArr1 = gaussian_filter(repairedArr1, kernelSize)
+    #
+    # # Replace good pix with good values
+    # repairedArr1[goodInds] = arr[goodInds]
+
+    # Iterative kernel size
+    iterKernelSize = 10
+
+    # Loop through and keep smoothing the array
+    meanDiff = 1.0
+    while meanDiff > 0.1:
+        # Smooth the image over with a smaller, 10 pixel kernel
+        repairedArr = gaussian_filter(repairedArr1, iterKernelSize)
+
+        # Immediately replace the good pixels with god values
+        repairedArr[goodInds] = arr[goodInds]
+
+        # Compute the mean pixel difference
+        pixelDiffs  = np.abs(repairedArr1[badInds] - repairedArr[badInds])
+        meanDiff    = np.mean(pixelDiffs)
+
+        # Now that the image has been smoothed, swap out the saved array
+        repairedArr1 = repairedArr
+
+    # Do another iteration but this time on SMALL scales
+    iterKernelSize = 4
+
+    # Loop through and keep smoothing the array
+    meanDiff = 1.0
+    while meanDiff > 1e-5:
+        # Smooth the image over with a smaller, 10 pixel kernel
+        repairedArr = gaussian_filter(repairedArr1, iterKernelSize)
+
+        # Immediately replace the good pixels with god values
+        repairedArr[goodInds] = arr[goodInds]
+
+        # Compute the mean pixel difference
+        pixelDiffs  = np.abs(repairedArr1[badInds] - repairedArr[badInds])
+        meanDiff    = np.mean(pixelDiffs)
+
+        # Now that the image has been smoothed, swap out the saved array
+        repairedArr1 = repairedArr
+
+    # Return the actual AstroImage instance
+    return repairedArr
 
 def build_pol_maps(Qimg, Uimg):
-    ''' This function will build polarization percentage and position angle maps
+    '''This function will build polarization percentage and position angle maps
     from the input Qimg and Uimg AstroImage instances. If the DEL_PA and
     S_DEL_PA header keywords are set (and match), then the position angle maps
     '''

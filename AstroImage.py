@@ -4,11 +4,10 @@ import copy
 import numpy as np
 from scipy import signal
 from scipy import ndimage
-
-#import scipy.interpolate
-#import scipy.ndimage
-
+from scipy.ndimage.filters import median_filter
+import scipy.optimize as opt
 import scipy.stats
+
 import matplotlib.pyplot as plt
 from astropy.modeling import models, fitting
 from astropy.stats import sigma_clipped_stats
@@ -272,8 +271,14 @@ class AstroImage(object):
     def __div__(self, other):
         # Implements division using the / operator.
         bothAreImages = isinstance(other, self.__class__)
-        oneIsInt      = isinstance(other, int)
-        oneIsFloat    = isinstance(other, float)
+        oneIsInt      = (isinstance(other, int) or
+                        isinstance(other, np.int8) or
+                        isinstance(other, np.int16) or
+                        isinstance(other, np.int32) or
+                        isinstance(other, np.int64))
+        oneIsFloat    = (isinstance(other, float) or
+                        isinstance(other, np.float32) or
+                        isinstance(other, np.float64))
         oneIsArray    = isinstance(other, np.ndarray)
 
         # TODO
@@ -632,14 +637,64 @@ class AstroImage(object):
 
         return output
 
-    def write(self, filename = ''):
+    def write(self, filename = '', dtype = None):
         # Test if a filename was provided and default to current filename
         if len(filename) == 0:
             filename = self.filename
 
+
+        # Make copies of the output data
+        outArr = self.arr.copy()
+        outHead = self.header.copy()
+        if hasattr(self, 'sigma'):
+            outSig = self.sigma.copy()
+
+
+        # If a data type was specified, recast output data into that format
+        if dtype is not None:
+            # First convert the array data
+            try:
+                outArr = outArr.astype(dtype)
+            except:
+                raise ValueError('dtype not recognized')
+
+            # Next convert the sigma data if it exists
+            if hasattr(self, 'sigma'):
+                outSig = outSig.astype(dtype)
+
+            # Now update the header to include that information
+            # First parse which bitpix value is required
+            #define BYTE_IMG      8  /*  8-bit unsigned integers */
+            #define SHORT_IMG    16  /* 16-bit   signed integers */
+            #define LONG_IMG     32  /* 32-bit   signed integers */
+            #define LONGLONG_IMG 64  /* 64-bit   signed integers */
+            #define FLOAT_IMG   -32  /* 32-bit single precision floating point */
+            #define DOUBLE_IMG  -64  /* 64-bit double precision floating point */
+            isByte    = ((dtype is np.byte) or (dtype is np.int8))
+            isInt16   = (dtype is np.int16)
+            isInt32   = (dtype is np.int32)
+            isInt64   = ((dtype is int) or (dtype is np.int64))
+            isFloat32 = (dtype is np.float32)
+            isFloat64 = ((dtype is float) or (dtype is np.float64))
+            if isByte:
+                bitpix = 8
+            elif isInt16:
+                bitpix = 16
+            elif isInt32:
+                bitpix = 32
+            elif isInt64:
+                bitpix = 64
+            elif isFloat32:
+                bitpix = -32
+            elif isFloat64:
+                bitpix = -64
+
+            # Now update the header itself
+            outHead['BITPIX'] = bitpix
+
         # Build a new HDU object to store the data
-        arrHDU = fits.PrimaryHDU(data = self.arr,
-                                 header = self.header,
+        arrHDU = fits.PrimaryHDU(data = outArr,
+                                 header = outHead,
                                  do_not_scale_image_data=True)
 
         # Replace the original header (since some cards may have been stripped)
@@ -649,9 +704,9 @@ class AstroImage(object):
         # then include it in the list of HDUs
         try:
             # Bulid a secondary HDU
-            sigmaHDU = fits.ImageHDU(data = self.sigma,
+            sigmaHDU = fits.ImageHDU(data = outSig,
                                      name = 'sigma',
-                                     header = self.header,
+                                     header = outHead,
                                      do_not_scale_image_data=True)
             HDUs = [arrHDU, sigmaHDU]
         except:
@@ -662,6 +717,147 @@ class AstroImage(object):
 
         # Write file to disk
         HDUlist.writeto(filename, clobber=True)
+
+    def get_PSF(self, shape='gaussian'):
+        """This method analyses the stars in the image and returns the PSF
+        properties of the image. The default mode fits 2D-gaussians to the
+        brightest, isolated stars in the image. Future versions could use there
+        2MASS sersic profile, etc...
+        """
+        # Grab the image sky statistics
+        mean, median, std = sigma_clipped_stats(self.arr, sigma=3.0, iters=5)
+
+        # Start by finding all the stars in the image
+        sources = daofind(self.arr - median, fwhm=3.0, threshold=15.0*std)
+
+        # Eliminate stars near the image edge
+        ny, nx = self.arr.shape
+        xStars, yStars = sources['xcentroid'].data, sources['ycentroid'].data
+        badXstars = np.logical_or(xStars < 50, xStars > nx - 50)
+        badYstars = np.logical_or(yStars < 50,  yStars > ny - 50)
+        edgeStars = np.logical_or(badXstars, badYstars)
+        if np.sum(edgeStars) > 0:
+            sources = sources[np.where(np.logical_not(edgeStars))]
+
+        # Eliminate any stars with neighbors within 30 pixels
+        keepFlags = np.ones_like(sources['flux'].data, dtype='bool')
+        for i, star in enumerate(sources):
+            # Compute the distance between this star and other stars
+            xs, ys = star['xcentroid'], star['ycentroid']
+            dist = np.sqrt((sources['xcentroid'].data - xs)**2 +
+                           (sources['ycentroid'].data - ys)**2)
+
+            # If there is another star within 20 pixels, then don't keep this
+            if np.sum(dist < 30) > 1:
+                keepFlags[i] = False
+
+        # Cull the list of sources to only include "isolated" stars
+        if np.sum(keepFlags) > 0:
+            sources = sources[np.where(keepFlags)]
+        else:
+            print('No sources survided the neighbor test')
+            pdb.set_trace()
+
+        # Sort the stars by brightness
+        sortInds = (sources['flux'].argsort())[::-1]
+        sources = sources[sortInds]
+
+        # Prep a local 2D gaussian function for fitting purposes
+        # def gauss2d(xy, amp, x0, y0, a, b, c):
+        #     x, y = xy
+        #     inner = a * (x - x0)**2
+        #     inner += 2 * b * (x - x0)**2 * (y - y0)**2
+        #     inner += c * (y - y0)**2
+        #     return amp * np.exp(-inner)
+
+        def gauss2d(xy, base, height, center_x, center_y, width_x, width_y, rotation):
+            """Returns a gaussian function with the given parameters"""
+            # Parse the xy vector
+            x, y     = xy
+
+            # Ensure the parameters are floats
+            width_x = float(width_x)
+            width_y = float(width_y)
+
+            xp = x - center_x
+            yp = y - center_y
+
+            # Convert rotation to radians and apply the rotation matrix
+            # to center coordinates
+            rotation = np.deg2rad(rotation)
+            # center_x = center_x * np.cos(rotation) - center_y * np.sin(rotation)
+            # center_y = center_x * np.sin(rotation) + center_y * np.cos(rotation)
+
+            # Rotate the xy coordinates
+            xp1 = xp * np.cos(rotation) - yp * np.sin(rotation)
+            yp1 = xp * np.sin(rotation) + yp * np.cos(rotation)
+
+            # Compute the gaussian values
+            g = base + height*np.exp(-((xp1/width_x)**2 + (yp1/width_y)**2)/2.)
+            return g
+
+        # Fit 2D-gaussians to the 10 brightest, isolated stars
+        yy, xx = np.mgrid[0:41, 0:41]
+        sxList  = list()
+        syList  = list()
+        rotList = list()
+        for i, star in enumerate(sources):
+            # Fit a 2D gaussian to each star
+            # First cut out a square array centered on the star
+            xs, ys = star['xcentroid'], star['ycentroid']
+            lf = np.int(xs.round()) - 20
+            rt = lf + 41
+            bt = np.int(ys.round()) - 20
+            tp = bt + 41
+            starArr = self.arr[bt:tp,lf:rt]
+
+            # Package xy, zobs for fitting
+            xy   = np.array([xx.ravel(), yy.ravel()])
+            zobs = starArr.ravel()
+
+            # Guess the initial parameters and perform the fit
+            #              base, amp,   xc,   yc,   sx,  sy,  rot
+            arrMax      = np.max(zobs)
+            base1       = np.median(zobs)
+            guessParams = [base1,    arrMax,   21.0,   21.0,   2.0,  2.0,   0.0]
+            boundParams = ((-np.inf, 0.0,    -100.0, -100.0,   0.1,  0.1,   0.0),
+                           (+np.inf, np.inf, +100.0, +100.0,  10.0, 10.0, 360.0))
+            try:
+                fitParams, uncert_cov = opt.curve_fit(gauss2d, xy, zobs,
+                    p0=guessParams, bounds=boundParams)
+            except:
+                print("Star {0} could not be fit".format(i))
+
+            # Test goodness of fitCenter
+            fitX, fitY = fitParams[2:4]
+            fitCenter  = np.sqrt((21 - fitParams[2])**2 + (21 - fitParams[3])**2)
+            goodStar   = ((fitCenter < 3.0) and
+                          (fitParams[4] > 0.5) and (fitParams[4] < 3.0) and
+                          (fitParams[5] > 0.5) and (fitParams[5]) < 3.0)
+
+            if goodStar:
+                # Store the relevant parameters
+                sxList.append(fitParams[4])
+                syList.append(fitParams[5])
+                rotList.append(fitParams[6])
+            # else:
+            #     # Check output
+            #     print('Star {0} has bad fit'.format(i))
+            #     plt.ion()
+            #     plt.figure()
+            #     plt.imshow(starArr)
+            #
+            #     test = gauss2d(xy, *fitParams)
+            #     test.shape = xx.shape
+            #     plt.figure()
+            #     plt.imshow(test)
+            #     pdb.set_trace()
+            #     plt.close('all')
+
+        # Compute an average gaussian shape and return to user
+        PSFparams = (np.median(sxList), np.median(syList), np.median(rotList))
+
+        return PSFparams
 
     def overscan_correction(self, overscanPos, sciencePos,
                             overscanPolyOrder = 3):
@@ -1328,12 +1524,19 @@ class AstroImage(object):
         # Transform coordinates to pixel positions
         x, y = coords.to_pixel(thisWCS)
 
+        # Make sure that x and y are at least one dimension long
+        if x.size == 1:
+            x = np.array([x]).flatten()
+        if y.size == 1:
+            y = np.array([y]).flatten()
+
         # Replace NANs with reasonable but sure to fail values
         badX = np.logical_not(np.isfinite(x))
         badY = np.logical_not(np.isfinite(y))
         badInd = np.where(np.logical_or(badX, badY))
-        x[badInd] = -1
-        y[badInd] = -1
+        if len(badInd[0]) > 0:
+            x[badInd] = -1
+            y[badInd] = -1
 
         # Grab the array size
         ny, nx = self.arr.shape
@@ -1355,7 +1558,7 @@ class AstroImage(object):
         img             -- the image with which self will be aligned
         fractionalShift -- if True, then images are shifted
                            to be aligned with sub-pixel precision
-        mode            -- ['wcs' | 'cross-correlate']
+        mode            -- ['wcs' | 'cross_correlate']
                            defines the method used to align the two images
         """
         #**********************************************************************
@@ -1476,8 +1679,7 @@ class AstroImage(object):
                 newImg.shift(0, -initialYshift)
 
             # Update header info
-            pdb.set_trace()
-            ### CHECK THAT THE HEADER IS ALREADY CORRECT
+            # New header may already be correct, but no harm in double checking.
             newSelf.header['NAXIS1'] = newSelf.arr.shape[1]
             newSelf.header['NAXIS2'] = newSelf.arr.shape[0]
             newImg.header['NAXIS1']  = newImg.arr.shape[1]
@@ -1497,9 +1699,37 @@ class AstroImage(object):
             than 0.1 pixel as determined by simply copying an image, shifting
             it an arbitrary amount, and attempting to recover that shift.
             """
-
             # Do an array flipped convolution, which is a correlation.
             corr = signal.fftconvolve(newSelf.arr, newImg.arr[::-1, ::-1], mode='same')
+
+            # Do a little post-processing to block out bad points in corr image
+            # First filter with the median
+            binX, binY = self.binning
+            medianKernShape = np.int(np.ceil(9.0/binX)), np.int(np.ceil(9.0/binY))
+            medCorr = median_filter(corr, size = medianKernShape)
+
+            # Compute sigma_clipped_stats of the correlation image
+            mean, median, stddev = sigma_clipped_stats(corr)
+
+            # Then check for significant deviations from median.
+            deviations = (np.abs(corr - medCorr) > 2.0*stddev)
+
+            # Count the number of masked neighbors for each pixel
+            neighborCount = np.zeros_like(corr, dtype=int)
+            for dx in range(-1,2,1):
+                for dy in range(-1,2,1):
+                    neighborCount += np.roll(np.roll(deviations, dy, axis=0),
+                                             dx, axis=1).astype(int)
+
+            # Find isolated deviant pixels (these are no good!)
+            deviations = np.logical_and(deviations, neighborCount <= 4)
+
+            # Inpaint those deviations
+            tmp  = AstroImage()
+            tmp.arr = corr
+            tmp.binning = (1,1)
+            tmp1 = image_tools.inpaint_nans(tmp.arr, mask = deviations)
+            corr = tmp1
 
             # Check for the maximum of the cross-correlation function
             peak1  = np.unravel_index(corr.argmax(), corr.shape)
@@ -1582,16 +1812,16 @@ class AstroImage(object):
                     yStar = np.round(sources['ycentroid'][iStar])
 
                     # Establish the cutout bondaries
-                    btCut = yStar - np.floor(0.5*starCutout)
-                    tpCut = btCut + starCutout
-                    lfCut = xStar - np.floor(0.5*starCutout)
-                    rtCut = lfCut + starCutout
+                    btCut = np.int(np.round(yStar - np.floor(0.5*starCutout)))
+                    tpCut = np.int(np.round(btCut + starCutout))
+                    lfCut = np.int(np.round(xStar - np.floor(0.5*starCutout)))
+                    rtCut = np.int(np.round(lfCut + starCutout))
 
                     # Establish the pasting boundaries
-                    btPaste = starCutout*yZone
-                    tpPaste = starCutout*(yZone + 1)
-                    lfPaste = starCutout*xZone
-                    rtPaste = starCutout*(xZone + 1)
+                    btPaste = np.int(np.round(starCutout*yZone))
+                    tpPaste = np.int(np.round(starCutout*(yZone + 1)))
+                    lfPaste = np.int(np.round(starCutout*xZone))
+                    rtPaste = np.int(np.round(starCutout*(xZone + 1)))
 
                     # Chop out the star and place it in the starImg
                     #    (sqrt-scale cutouts (~SNR per pixel) to emphasize alignment
@@ -1753,9 +1983,11 @@ class AstroImage(object):
 
         # Set the scaling for the image
         if scale == 'linear':
+            # Compute a display range in terms of the image noise level
             showArr = self.arr
-            if vmin == None: vmin = np.min(self.arr)
-            if vmax == None: vmax = np.max(self.arr)
+            mean, median, stddev = sigma_clipped_stats(self.arr.flatten())
+            if vmin == None: vmin = median - 2*stddev
+            if vmax == None: vmax = median + 10*stddev
         elif scale == 'log':
             showArr = np.log10(self.arr)
             if vmin == None:
