@@ -1174,8 +1174,8 @@ class AstroImage(object):
             outHead['NAXIS2'] = ny1
 
             # Update the CRPIX values
-            outHead['CRPIX1'] = (self.header['CRPIX1'] + 0.5)*xratio - 0.5
-            outHead['CRPIX2'] = (self.header['CRPIX2'] + 0.5)*yratio - 0.5
+            outHead['CRPIX1'] = (self.header['CRPIX1'] + 0.5)*xratio + 0.5
+            outHead['CRPIX2'] = (self.header['CRPIX2'] + 0.5)*yratio + 0.5
             if wcs.wcs.has_cd():
                 # Attempt to use CD matrix corrections, first
                 # Apply updates to CD valus
@@ -1498,9 +1498,13 @@ class AstroImage(object):
 
         # Finally, update the header information
         if hasattr(self, 'header'):
-            # Update the header astrometry
-            self.header['CRPIX1'] = self.header['CRPIX1'] + dx
-            self.header['CRPIX2'] = self.header['CRPIX2'] + dy
+            wcs = WCS(self.header)
+
+            # Check if the header contains celestial WCS coords
+            if wcs.has_celestial:
+                # Update the header astrometry
+                self.header['CRPIX1'] = self.header['CRPIX1'] + dx
+                self.header['CRPIX2'] = self.header['CRPIX2'] + dy
 
     def in_image(self, coords, edge=0):
         """A method to test which (RA, Dec) coordinates lie within the image.

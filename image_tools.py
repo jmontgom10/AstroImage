@@ -6,7 +6,7 @@ import os
 import sys
 from astropy.io import fits
 from wcsaxes import WCS
-from astropy.wcs.utils import pixel_to_skycoord
+from astropy.wcs.utils import pixel_to_skycoord, proj_plane_pixel_scales
 from scipy.odr import *
 from scipy.ndimage import map_coordinates
 from scipy.ndimage.filters import median_filter, gaussian_filter
@@ -180,10 +180,16 @@ def align_images(imgList, padding=0, mode='wcs', subPixel=False, offsets=False):
 
         # Check that the header is already correct!
         # Update the header information
-        newImg.header['CRPIX1'] = newImg.header['CRPIX1'] + padWidth[1][0]
-        newImg.header['CRPIX2'] = newImg.header['CRPIX2'] + padWidth[0][0]
-        newImg.header['NAXIS1'] = newImg.arr.shape[1]
-        newImg.header['NAXIS2'] = newImg.arr.shape[0]
+        if hasattr(newImg, 'header'):
+            wcs = WCS(newImg.header)
+            if wcs.has_celestial:
+                # Update the CRPIX values
+                newImg.header['CRPIX1'] = newImg.header['CRPIX1'] + padWidth[1][0]
+                newImg.header['CRPIX2'] = newImg.header['CRPIX2'] + padWidth[0][0]
+
+            # Update the image NAXIS values
+            newImg.header['NAXIS1'] = newImg.arr.shape[1]
+            newImg.header['NAXIS2'] = newImg.arr.shape[0]
 
         # Append the shifted image
         alignedImgList.append(newImg)
@@ -505,19 +511,9 @@ def combine_images(imgList, output = 'MEAN',
             # Store the output uncertainty in the sigma attribute
             outImg.sigma = sigmaImg
 
-        # Now that an average image has been computed,
-        # Clear out the old astrometry
-        if 'WCSAXES' in outImg.header.keys():
-            del outImg.header['WCSAXES']
-            del outImg.header['PC*']
-            del outImg.header['CDELT*']
-            del outImg.header['CUNIT*']
-            del outImg.header['*POLE']
-            outImg.header['CRPIX*'] = 1.0
-            outImg.header['CRVAL*'] = 1.0
-            outImg.header['CTYPE*'] = 'Linear Binned ADC Pixels'
-            outImg.header['NAXIS1'] = outImg.arr.shape[1]
-            outImg.header['NAXIS2'] = outImg.arr.shape[0]
+        # Update the image shape in the header
+        outImg.header['NAXIS1'] = outImg.arr.shape[1]
+        outImg.header['NAXIS2'] = outImg.arr.shape[0]
 
         # Finally return the final result
         return outImg
@@ -525,8 +521,7 @@ def combine_images(imgList, output = 'MEAN',
         return imgList[0]
 
 def astrometry(img, override = False):
-    """A method to invoke astrometry.net
-    and solve the astrometry of the image.
+    """A method to invoke astrometry.net and solve the astrometry of the image.
     """
     #######################
     # TODO THIS NEEDS TO BE RE-WRITTEN SO THAT IT WORKS AS A FUNCTION
@@ -652,12 +647,59 @@ def astrometry(img, override = False):
             wcsObj = WCS(HDUlist[0].header)
             HDUlist.close()
 
-            # Build a quick header from the WCS object
-            wcsHead = wcsObj.to_header()
+            # Double make sure that there is no other WCS data in the header
+            if 'WCSAXES' in img1.header.keys():
+                del img1.header['WCSAXES']
+
+            if len(img1.header['CDELT*']) > 0:
+                del img1.header['CDELT*']
+
+            if len(img1.header['CUNIT*']) > 0:
+                del img1.header['CUNIT*']
+
+            if len(img1.header['*POLE']) > 0:
+                del img1.header['*POLE']
+
+            if len(img1.header['CD*_*']) > 0:
+                del img1.header['CD*_*']
+
+            if len(img1.header['PC*_*']) > 0:
+                del img1.header['PC*_*']
+
+            if len(img1.header['CRPIX*']) > 0:
+                del img1.header['CRPIX*']
+
+            if len(img1.header['CRVAL*']) > 0:
+                del img1.header['CRVAL*']
+
+            if len(img1.header['CTYPE*']) > 0:
+                del img1.header['CTYPE*']
+
+            # Grab the CD matrix from the WCS object
+            CD1_1, CD1_2, CD2_1, CD2_2 = wcsObj.wcs.cd.flatten()
+
+            # Grab the center pixels, values, units, and types
+            CRPIX1, CRPIX2 = wcsObj.wcs.crpix
+            CRVAL1, CRVAL2 = wcsObj.wcs.crval
+            CTYPE1, CTYPE2 = wcsObj.wcs.ctype
+            CTYPE1, CTYPE2 = CTYPE1[0:8], CTYPE2[0:8]
+
+            # Grab the poles
+            LATPOLE, LONPOLE = wcsObj.wcs.latpole, wcsObj.wcs.lonpole
 
             # Update the image header to contain the astrometry info
-            for key in wcsHead.keys():
-                img1.header[key] = wcsHead[key]
+            img1.header['CD1_1']   = CD1_1
+            img1.header['CD1_2']   = CD1_2
+            img1.header['CD2_1']   = CD2_1
+            img1.header['CD2_2']   = CD2_2
+            img1.header['CRPIX1']  = CRPIX1
+            img1.header['CRPIX2']  = CRPIX2
+            img1.header['CRVAL1']  = CRVAL1
+            img1.header['CRVAL2']  = CRVAL2
+            img1.header['CTYPE1']  = CTYPE1
+            img1.header['CTYPE2']  = CTYPE2
+            img1.header['LATPOLE'] = LATPOLE
+            img1.header['LONPOLE'] = LONPOLE
 
             # Cleanup the none and WCS file,
             rmProc = subprocess.Popen(delCmd + wcsPath, shell=shellCmd)
