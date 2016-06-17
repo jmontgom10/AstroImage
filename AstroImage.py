@@ -7,10 +7,11 @@ from scipy import ndimage
 from scipy.ndimage.filters import median_filter
 import scipy.optimize as opt
 import scipy.stats
-
+import matplotlib.colors as mcol
 import matplotlib.pyplot as plt
 from astropy.modeling import models, fitting
 from astropy.stats import sigma_clipped_stats
+import astropy.units as u
 from astropy.io import fits
 
 # TODO
@@ -475,6 +476,30 @@ class AstroImage(object):
     ### END OF MAGIC METHODS       ###
     ### BEGIN OTHER COMMON METHODS ###
     ##################################
+    def rad2deg(self):
+        '''A simple method for converting the image array values from radians
+        to degrees.
+        '''
+
+        outImg = self.copy()
+        outImg.arr = np.rad2deg(self.arr)
+
+        if hasattr(self, 'sigma'):
+            outImg.sigma = np.abs(np.rad2deg(self.sigma))
+
+        return outImg
+
+    def deg2rad(self):
+        '''A simple method for converting the image array values from degrees
+        to radians.
+        '''
+        outImg = self.copy()
+        outImg.arr = np.deg2rad(self.arr)
+
+        if hasattr(self, 'sigma'):
+            outImg.sigma = np.deg2rad(self.sigma)
+
+        return outImg
 
     def sin(self):
         '''A simple method for computing the sine of the image and propagating
@@ -606,28 +631,39 @@ class AstroImage(object):
 
         return self**(0.5)
 
-    def rad2deg(self):
-        '''A simple method for converting the image array values from radians
-        to degrees.
+    def exp(self):
+        '''A simple method for computing the expontial of the image and
+        propagating its uncertainty (if a sigma array has been defined).
         '''
-
         outImg = self.copy()
-        outImg.arr = np.rad2deg(self.arr)
+        outImg.arr = np.exp(self.arr)
 
         if hasattr(self, 'sigma'):
-            outImg.sigma = np.abs(np.rad2deg(self.sigma))
+            outImg.sigma = np.abs(self.sigma*self.arr)
 
         return outImg
 
-    def deg2rad(self):
-        '''A simple method for converting the image array values from degrees
-        to radians.
+    def log(self):
+        '''A simple method for computing the natural log of the image and
+        propagating its uncertainty (if a sigma array has been defined).
         '''
         outImg = self.copy()
-        outImg.arr = np.deg2rad(self.arr)
+        outImg.arr = np.log(self.arr)
 
         if hasattr(self, 'sigma'):
-            outImg.sigma = np.deg2rad(self.sigma)
+            outImg.sigma = np.abs(self.sigma/self.arr)
+
+        return outImg
+
+    def log10(self):
+        '''A simple method for computing the base-10 log of the image and
+        propagating its uncertainty (if a sigma array has been defined).
+        '''
+        outImg = self.copy()
+        outImg.arr = np.log10(self.arr)
+
+        if hasattr(self, 'sigma'):
+            outImg.sigma = np.abs(self.sigma/(np.log(10)*self.arr))
 
         return outImg
 
@@ -915,13 +951,39 @@ class AstroImage(object):
         if 'BZERO' in keys:
             scaledArr = scaledArr + self.header['BZERO']
 
+        # Apply scaling uncertainty if available
+        if hasattr(self, 'sigma'):
+            # If there is a sigma array, then tret it
+            if 'BSCALE' in keys:
+                if 'SBSCALE' in keys:
+                    # Include the uncertainty in the scaling...
+                    sigArr = np.abs(scaledArr)*np.sqrt((self.sigma/self.arr)**2
+                        + (self.header['SBSCALE']/self.header['BSCALE'])**2)
+                else:
+                    # Otherwise just scale up the uncertainty...
+                    sigArr  = self.sigma.copy()
+                    sigArr *= self.header['BSCALE']
+
         # Check if a copy of the image was requested
         if copy:
             outImg = self.copy()
             outImg.arr = scaledArr
+
+            # Try to store the sigArr array in the output image
+            try:
+                outImg.sigma = sigArr
+            except:
+                pass
+
             return outImg
         else:
             self.arr = scaledArr
+
+            # Try to store the sigArr array in the original image
+            try:
+                self.sigma = sigArr
+            except:
+                pass
 
     def frebin(self, nx1, ny1, copy=False, total=False):
         """Rebins the image using a flux conservative method. If 'copy' is True,
@@ -1137,8 +1199,9 @@ class AstroImage(object):
             tmpArr = wts*self.arr
 
             # Perform the actual rebinning
-            rebinWts = wts.reshape(sh).mean(-1).mean(1)
-            rebinArr = (tmpArr.reshape(sh).mean(-1).mean(1))/rebinWts
+            # rebinWts1 = wts.reshape(sh).mean(-1).mean(1)
+            rebinWts = wts.reshape(sh).sum(-1).sum(1)
+            rebinArr = (tmpArr.reshape(sh).sum(-1).sum(1))/rebinWts
             rebinSig = np.sqrt(1.0/rebinWts)
 
             # Check if total flux conservation was requested
@@ -1617,6 +1680,248 @@ class AstroImage(object):
             dx = x2 - x1
             dy = y2 - y1
 
+            if fractionalShift:
+                # If a fractional shift is requested, then simply store these
+                # values for later use
+                pass
+            else:
+                # Otherwise round shifts to nearest integer
+                dx = np.int(np.round(dx))
+                dy = np.int(np.round(dy))
+
+        elif mode == 'cross_correlate':
+            """
+            n. b. This method appears to produce results accurate to better
+            than 0.1 pixel as determined by simply copying an image, shifting
+            it an arbitrary amount, and attempting to recover that shift.
+            """
+            # Do an array flipped convolution, which is a correlation.
+            corr = signal.fftconvolve(newImg.arr, newSelf.arr[::-1, ::-1], mode='same')
+
+            # Do a little post-processing to block out bad points in corr image
+            # First filter with the median
+            binX, binY = self.binning
+            medianKernShape = np.int(np.ceil(9.0/binX)), np.int(np.ceil(9.0/binY))
+            medCorr = median_filter(corr, size = medianKernShape)
+
+            # Compute sigma_clipped_stats of the correlation image
+            mean, median, stddev = sigma_clipped_stats(corr)
+
+            # Then check for significant deviations from median.
+            deviations = (np.abs(corr - medCorr) > 2.0*stddev)
+
+            # Count the number of masked neighbors for each pixel
+            neighborCount = np.zeros_like(corr, dtype=int)
+            for dx in range(-1,2,1):
+                for dy in range(-1,2,1):
+                    neighborCount += np.roll(np.roll(deviations, dy, axis=0),
+                                             dx, axis=1).astype(int)
+
+            # Find isolated deviant pixels (these are no good!)
+            deviations = np.logical_and(deviations, neighborCount <= 4)
+
+            if np.sum(deviations > 0):
+                # Inpaint those deviations
+                tmp  = AstroImage()
+                tmp.arr = corr
+                tmp.binning = (1,1)
+                tmp1 = image_tools.inpaint_nans(tmp.arr, mask = deviations)
+                corr = tmp1
+
+            # Check for the maximum of the cross-correlation function
+            peak1  = np.unravel_index(corr.argmax(), corr.shape)
+            dy, dx = np.array(peak1) - np.array(corr.shape)//2
+
+            # If integer pixel shifts are ok, then just use the peak of the
+            # correlation image to determine the total image offsets
+            if fractionalShift:
+                # Otherwise cut out subarrays around the brightest 25 stars, and
+                # figure out what fractional shift value produces the best
+                # correlation image for those subarrays.
+
+                # Apply the initial (integer) shifts to the images
+                img1 = newImg.copy()
+                img1.shift(dx, dy)
+
+                # Combine images to find the brightest 25 (or 16, or 9 stars in the image)
+                comboImg = newSelf + img1
+
+                # Get the image statistics
+                mean, median, std = sigma_clipped_stats(comboImg.arr, sigma=3.0, iters=5)
+
+                # Find the stars in the images
+                sources = daofind(comboImg.arr - median, fwhm=3.0, threshold=5.*std)
+
+                # Sort the sources lists by brightness
+                sortInds = np.argsort(sources['mag'])
+                sources  = sources[sortInds]
+
+                # Remove detections within 20 pixels of the image edge
+                # (This guarantees that the star-cutout process will succeed)
+                ny, nx   = comboImg.arr.shape
+                goodX    = np.logical_and(sources['xcentroid'] > 20,
+                                         sources['xcentroid'] < (nx - 20))
+                goodY    = np.logical_and(sources['ycentroid'] > 20,
+                                         sources['ycentroid'] < (ny - 20))
+                goodInds = np.where(np.logical_and(goodX, goodY))
+                sources  = sources[goodInds]
+
+                # Cull the saturated stars from the list
+                numStars = len(sources)
+                yy, xx   = np.mgrid[0:ny,0:nx]
+                badStars = []
+
+                for iStar in range(numStars):
+                    # Grab pixels less than 10 from the star
+                    xStar, yStar = sources[iStar]['xcentroid'], sources[iStar]['ycentroid']
+                    starDist  = np.sqrt((xx - xStar)**2 + (yy - yStar)**2)
+                    starPatch = comboImg.arr[np.where(starDist < 10)]
+
+                    # Test if there are bad pixels within 10 from the star
+                    # numBadPix = np.sum(np.logical_or(starPatch > 12e3, starPatch < -100))
+                    numBadPix = np.sum(starPatch < -100)
+
+                    # Append the test result to the "badStars" list
+                    badStars.append(numBadPix > 0)
+
+                sources = sources[np.where(np.logical_not(badStars))]
+
+                # Cull the list to the brightest few stars
+                numStars = len(sources)
+                if numStars > 25:
+                    numStars = 25
+                elif numStars > 16:
+                    numStars = 16
+                elif numStars > 9:
+                    numStars = 9
+                else:
+                    print('There are not very many stars. Is something wrong?')
+                    pdb.set_trace()
+
+                sources = sources[0:numStars]
+
+                # Chop out the sections around each star,
+                # and build a "starImage"
+                starCutout  = 20
+                numZoneSide = np.int(np.round(np.sqrt(numStars)))
+                starImgSide = starCutout*numZoneSide
+                starImg1 = np.zeros((starImgSide, starImgSide))
+                starImg2 = np.zeros((starImgSide, starImgSide))
+                # Loop through each star to be cut out
+                iStar = 0
+                for xZone in range(numZoneSide):
+                    for yZone in range(numZoneSide):
+                        # Grab the star positions
+                        xStar = np.round(sources['xcentroid'][iStar])
+                        yStar = np.round(sources['ycentroid'][iStar])
+
+                        # Establish the cutout bondaries
+                        btCut = np.int(np.round(yStar - np.floor(0.5*starCutout)))
+                        tpCut = np.int(np.round(btCut + starCutout))
+                        lfCut = np.int(np.round(xStar - np.floor(0.5*starCutout)))
+                        rtCut = np.int(np.round(lfCut + starCutout))
+
+                        # Establish the pasting boundaries
+                        btPaste = np.int(np.round(starCutout*yZone))
+                        tpPaste = np.int(np.round(starCutout*(yZone + 1)))
+                        lfPaste = np.int(np.round(starCutout*xZone))
+                        rtPaste = np.int(np.round(starCutout*(xZone + 1)))
+
+                        # Chop out the star and place it in the starImg
+                        #    (sqrt-scale cutouts (~SNR per pixel) to emphasize alignment
+                        #    of ALL stars not just bright stars).
+                        # Apply accurate flooring of values at 0 (rather than simply using np.abs)
+                        starImg1[btPaste:tpPaste, lfPaste:rtPaste] = np.sqrt(np.abs(img1.arr[btCut:tpCut, lfCut:rtCut]))
+                        starImg2[btPaste:tpPaste, lfPaste:rtPaste] = np.sqrt(np.abs(newSelf.arr[btCut:tpCut, lfCut:rtCut]))
+
+                        # Increment the star counter
+                        iStar += 1
+
+                # Do an array flipped convolution, which is a correlation.
+                corr  = signal.fftconvolve(starImg1, starImg2[::-1, ::-1], mode='same')
+                corr  = 100*corr/np.max(corr)
+
+                # Check for the maximum of the cross-correlation function
+                peak2 = np.unravel_index(corr.argmax(), corr.shape)
+
+                # Chop out the central peak
+                peakSz = 6
+                btCorr = peak2[0] - peakSz
+                tpCorr = btCorr + 2*peakSz + 1
+                lfCorr = peak2[1] - peakSz
+                rtCorr = lfCorr + 2*peakSz + 1
+                corr1  = corr[btCorr:tpCorr, lfCorr:rtCorr]
+
+                # Get the gradient of the cross-correlation function
+                tmp     = AstroImage()
+                tmp.arr = corr1
+                Gx, Gy  = tmp.gradient()
+                grad    = np.sqrt(Gx**2 + Gy**2)
+
+                # Fill in edges to remove artifacts
+                gradMax      = np.max(grad)
+                grad[0:3, :] = gradMax
+                grad[:, 0:3] = gradMax
+                grad[grad.shape[0]-3:grad.shape[0], :] = gradMax
+                grad[:, grad.shape[1]-3:grad.shape[1]] = gradMax
+
+                # Grab the index of the minimum
+                yMin, xMin = np.unravel_index(grad.argmin(), grad.shape)
+
+                # Chop out the central zone and grab the minimum of the gradient
+                cenSz = 3
+                bot   = yMin - cenSz//2
+                top   = bot + cenSz
+                lf    = xMin - cenSz//2
+                rt    = lf + cenSz
+
+                # Grab the region near the minima
+                yy, xx   = np.mgrid[bot:top, lf:rt]
+                Gx_plane = Gx[bot:top, lf:rt]
+                Gy_plane = Gy[bot:top, lf:rt]
+
+                # Fit planes to the x and y gradients...Gx
+                px_init = models.Polynomial2D(degree=1)
+                py_init = models.Polynomial2D(degree=1)
+                #fit_p   = fitting.LevMarLSQFitter()
+                fit_p   = fitting.LinearLSQFitter()
+                px      = fit_p(px_init, xx, yy, Gx_plane)
+                py      = fit_p(py_init, xx, yy, Gy_plane)
+
+                # Solve these equations using NUMPY
+                # 0 = px.c0_0 + px.c1_0*xx_plane + px.c0_1*yy_plane
+                # 0 = py.c0_0 + py.c1_0*xx_plane + py.c0_1*yy_plane
+                #
+                # This can be reduced to Ax = b, where
+                #
+                A = np.matrix([[px.c1_0.value, px.c0_1.value],
+                               [py.c1_0.value, py.c0_1.value]])
+                b = np.matrix([[-px.c0_0.value],
+                               [-py.c0_0.value]])
+
+                # Now we can use the build in numpy linear algebra solver
+                x_soln = np.linalg.solve(A, b)
+
+                # Finally convert back into an absolute image offset
+                dx1 = lfCorr + (x_soln.item(0) - (numZoneSide*starCutout)//2)
+                dy1 = btCorr + (x_soln.item(1) - (numZoneSide*starCutout)//2)
+
+                # Accumulate the fractional shift on top of the integer shift
+                # computed earlier
+                dx += dx1
+                dy += dy1
+        else:
+            print('mode rot recognized')
+            pdb.set_trace()
+
+        # The image offsets have been computed, so return the requested data
+        if offsets:
+            # If only the image offsets were requested, then simply return these
+            return (dx, dy)
+        else:
+            # Otherwise apply the computed image shifts to the input images and
+            # return a tupple of aligned images.
+
             # Compute the padding amounts. This is a non-trivial process due to
             # the way that odd vs. even is determined in python 3.x.
             if (np.int(np.round(dx)) % 2) == 1:
@@ -1655,15 +1960,10 @@ class AstroImage(object):
                 selfShiftY = +np.int(np.round(0.5*dy))
                 imgShiftY  = -np.int(np.round(dy - selfShiftY))
 
-
             # Define the padding widths
             # (recall axis ordering is 0=z, 1=y, 2=x, etc...)
             selfPadWidth = np.array((selfDY, selfDX), dtype=np.int)
             imgPadWidth  = np.array((imgDY,  imgDX), dtype=np.int)
-
-            # Create copy images
-            newSelf = self.copy()
-            newImg  = img.copy()
 
             # Compute the padding to be added and pad the arr and sigma arrays
             newSelf.pad(selfPadWidth, mode='constant')
@@ -1692,238 +1992,6 @@ class AstroImage(object):
             # Shift the images
             newSelf.shift(selfShiftX, selfShiftY)
             newImg.shift(imgShiftX, imgShiftY)
-
-            # Save the total offsets
-            # TODO check that this is correct
-            dx_tot, dy_tot = selfShiftX - imgShiftX, selfShiftY - imgShiftY
-
-        elif mode == 'cross_correlate':
-            """
-            n. b. This method appears to produce results accurate to better
-            than 0.1 pixel as determined by simply copying an image, shifting
-            it an arbitrary amount, and attempting to recover that shift.
-            """
-            # Do an array flipped convolution, which is a correlation.
-            corr = signal.fftconvolve(newSelf.arr, newImg.arr[::-1, ::-1], mode='same')
-
-            # Do a little post-processing to block out bad points in corr image
-            # First filter with the median
-            binX, binY = self.binning
-            medianKernShape = np.int(np.ceil(9.0/binX)), np.int(np.ceil(9.0/binY))
-            medCorr = median_filter(corr, size = medianKernShape)
-
-            # Compute sigma_clipped_stats of the correlation image
-            mean, median, stddev = sigma_clipped_stats(corr)
-
-            # Then check for significant deviations from median.
-            deviations = (np.abs(corr - medCorr) > 2.0*stddev)
-
-            # Count the number of masked neighbors for each pixel
-            neighborCount = np.zeros_like(corr, dtype=int)
-            for dx in range(-1,2,1):
-                for dy in range(-1,2,1):
-                    neighborCount += np.roll(np.roll(deviations, dy, axis=0),
-                                             dx, axis=1).astype(int)
-
-            # Find isolated deviant pixels (these are no good!)
-            deviations = np.logical_and(deviations, neighborCount <= 4)
-
-            # Inpaint those deviations
-            tmp  = AstroImage()
-            tmp.arr = corr
-            tmp.binning = (1,1)
-            tmp1 = image_tools.inpaint_nans(tmp.arr, mask = deviations)
-            corr = tmp1
-
-            # Check for the maximum of the cross-correlation function
-            peak1  = np.unravel_index(corr.argmax(), corr.shape)
-            dy, dx = np.array(peak1) - np.array(corr.shape)//2
-
-            # Apply the initial (integer) shifts to the images
-            img1 = newImg.copy()
-            img1.shift(dx, dy)
-
-            # Combine images to find the brightest 25 (or 16, or 9 stars in the image)
-            comboImg = newSelf + img1
-
-            # Get the image statistics
-            mean, median, std = sigma_clipped_stats(comboImg.arr, sigma=3.0, iters=5)
-
-            # Find the stars in the images
-            sources = daofind(comboImg.arr - median, fwhm=3.0, threshold=5.*std)
-
-            # Sort the sources lists by brightness
-            sortInds = np.argsort(sources['mag'])
-            sources  = sources[sortInds]
-
-            # Remove detections within 20 pixels of the image edge
-            # (This guarantees that the star-cutout process will succeed)
-            ny, nx   = comboImg.arr.shape
-            goodX    = np.logical_and(sources['xcentroid'] > 20,
-                                     sources['xcentroid'] < (nx - 20))
-            goodY    = np.logical_and(sources['ycentroid'] > 20,
-                                     sources['ycentroid'] < (ny - 20))
-            goodInds = np.where(np.logical_and(goodX, goodY))
-            sources  = sources[goodInds]
-
-            # Cull the saturated stars from the list
-            numStars = len(sources)
-            yy, xx   = np.mgrid[0:ny,0:nx]
-            badStars = []
-
-            for iStar in range(numStars):
-                # Grab pixels less than 10 from the star
-                xStar, yStar = sources[iStar]['xcentroid'], sources[iStar]['ycentroid']
-                starDist  = np.sqrt((xx - xStar)**2 + (yy - yStar)**2)
-                starPatch = comboImg.arr[np.where(starDist < 10)]
-
-                # Test if there are bad pixels within 10 from the star
-                # numBadPix = np.sum(np.logical_or(starPatch > 12e3, starPatch < -100))
-                numBadPix = np.sum(starPatch < -100)
-
-                # Append the test result to the "badStars" list
-                badStars.append(numBadPix > 0)
-
-            sources = sources[np.where(np.logical_not(badStars))]
-
-            # Cull the list to the brightest few stars
-            numStars = len(sources)
-            if numStars > 25:
-                numStars = 25
-            elif numStars > 16:
-                numStars = 16
-            elif numStars > 9:
-                numStars = 9
-            else:
-                print('There are not very many stars. Is something wrong?')
-                pdb.set_trace()
-
-            sources = sources[0:numStars]
-
-            # Chop out the sections around each star,
-            # and build a "starImage"
-            starCutout  = 20
-            numZoneSide = np.int(np.round(np.sqrt(numStars)))
-            starImgSide = starCutout*numZoneSide
-            starImg1 = np.zeros((starImgSide, starImgSide))
-            starImg2 = np.zeros((starImgSide, starImgSide))
-            # Loop through each star to be cut out
-            iStar = 0
-            for xZone in range(numZoneSide):
-                for yZone in range(numZoneSide):
-                    # Grab the star positions
-                    xStar = np.round(sources['xcentroid'][iStar])
-                    yStar = np.round(sources['ycentroid'][iStar])
-
-                    # Establish the cutout bondaries
-                    btCut = np.int(np.round(yStar - np.floor(0.5*starCutout)))
-                    tpCut = np.int(np.round(btCut + starCutout))
-                    lfCut = np.int(np.round(xStar - np.floor(0.5*starCutout)))
-                    rtCut = np.int(np.round(lfCut + starCutout))
-
-                    # Establish the pasting boundaries
-                    btPaste = np.int(np.round(starCutout*yZone))
-                    tpPaste = np.int(np.round(starCutout*(yZone + 1)))
-                    lfPaste = np.int(np.round(starCutout*xZone))
-                    rtPaste = np.int(np.round(starCutout*(xZone + 1)))
-
-                    # Chop out the star and place it in the starImg
-                    #    (sqrt-scale cutouts (~SNR per pixel) to emphasize alignment
-                    #    of ALL stars not just bright stars).
-                    # Apply accurate flooring of values at 0 (rather than simply using np.abs)
-                    starImg1[btPaste:tpPaste, lfPaste:rtPaste] = np.sqrt(np.abs(newSelf.arr[btCut:tpCut, lfCut:rtCut]))
-                    starImg2[btPaste:tpPaste, lfPaste:rtPaste] = np.sqrt(np.abs(img1.arr[btCut:tpCut, lfCut:rtCut]))
-
-                    # Increment the star counter
-                    iStar += 1
-
-            # Do an array flipped convolution, which is a correlation.
-            corr  = signal.fftconvolve(starImg1, starImg2[::-1, ::-1], mode='same')
-            corr  = 100*corr/np.max(corr)
-
-            # Check for the maximum of the cross-correlation function
-            peak2 = np.unravel_index(corr.argmax(), corr.shape)
-
-            # Chop out the central peak
-            peakSz = 6
-            btCorr = peak2[0] - peakSz
-            tpCorr = btCorr + 2*peakSz + 1
-            lfCorr = peak2[1] - peakSz
-            rtCorr = lfCorr + 2*peakSz + 1
-            corr1  = corr[btCorr:tpCorr, lfCorr:rtCorr]
-
-            # Get the gradient of the cross-correlation function
-            tmp     = AstroImage()
-            tmp.arr = corr1
-            Gx, Gy  = tmp.gradient()
-            grad    = np.sqrt(Gx**2 + Gy**2)
-
-            # Fill in edges to remove artifacts
-            gradMax      = np.max(grad)
-            grad[0:3, :] = gradMax
-            grad[:, 0:3] = gradMax
-            grad[grad.shape[0]-3:grad.shape[0], :] = gradMax
-            grad[:, grad.shape[1]-3:grad.shape[1]] = gradMax
-
-            # Grab the index of the minimum
-            yMin, xMin = np.unravel_index(grad.argmin(), grad.shape)
-
-            # Chop out the central zone and grab the minimum of the gradient
-            cenSz = 3
-            bot   = yMin - cenSz//2
-            top   = bot + cenSz
-            lf    = xMin - cenSz//2
-            rt    = lf + cenSz
-
-            # Grab the region near the minima
-            yy, xx   = np.mgrid[bot:top, lf:rt]
-            Gx_plane = Gx[bot:top, lf:rt]
-            Gy_plane = Gy[bot:top, lf:rt]
-
-            # Fit planes to the x and y gradients...Gx
-            px_init = models.Polynomial2D(degree=1)
-            py_init = models.Polynomial2D(degree=1)
-            #fit_p   = fitting.LevMarLSQFitter()
-            fit_p   = fitting.LinearLSQFitter()
-            px      = fit_p(px_init, xx, yy, Gx_plane)
-            py      = fit_p(py_init, xx, yy, Gy_plane)
-
-            # Solve these equations using NUMPY
-            #0 = px.c0_0 + px.c1_0*xx_plane + px.c0_1*yy_plane
-            #0 = py.c0_0 + py.c1_0*xx_plane + py.c0_1*yy_plane
-            #
-            # This can be reduced to Ax = b, where
-            #
-            A = np.matrix([[px.c1_0.value, px.c0_1.value],
-                           [py.c1_0.value, py.c0_1.value]])
-            b = np.matrix([[-px.c0_0.value],
-                           [-py.c0_0.value]])
-
-            # Now we can use the build in numpy linear algebra solver
-            x_soln = np.linalg.solve(A, b)
-
-            # Finally convert back into an absolute image offset
-            dx1 = lfCorr + (x_soln.item(0) - (numZoneSide*starCutout)//2)
-            dy1 = btCorr + (x_soln.item(1) - (numZoneSide*starCutout)//2)
-            dx_tot = dx + dx1
-            dy_tot = dy + dy1
-        else:
-            print('mode rot recognized')
-            pdb.set_trace()
-
-        # The image offsets have been computed, so return the requested data
-        if offsets:
-            # Return the image offsets
-            return [dx_tot, dy_tot]
-        else:
-            #&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&
-            # TODO
-            # IN THE FUTURE THERE SHOULD BE SOME PADDING ADDED TO PREVENT DATA
-            # LOSS
-            #&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&
-            # Apply the final shifts
-            newSelf.shift(-0.5*dx_tot, -0.5*dy_tot)
-            newImg.shift(+0.5*dx_tot, +0.5*dy_tot)
 
             # Retun the aligned Images (not the same size as the input images)
             return [newSelf, newImg]
@@ -1971,9 +2039,74 @@ class AstroImage(object):
 
         return (Gx, Gy)
 
+    def get_ticks(self):
+        """Uses info from the array shape and and image header to assess the
+        spacing between RA and Dec ticks, major tick formatting, and the minor
+        tick frequency.
+        """
+        # Grab the WCS from the header.
+        wcs = WCS(self.header)
+        if wcs.has_celestial:
+            # First compute the image dimensions in arcsec
+            ps_x, ps_y    = proj_plane_pixel_scales(wcs)
+            height, width = (
+                np.array(self.arr.shape)
+                *np.array([ps_y, ps_x])*3600*u.arcsec)
+
+            # Setup a range of viable major tick spacing options
+            spacingOptions = np.array([
+                0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 20, 30, 1*60, 2*60, 5*60,
+                10*60, 30*60, 1*60*60, 2*60*60, 5*60*60])*u.arcsec
+
+            # Setup corresponding RA and Dec tick label format strings
+            RAformatters = np.array([
+                'hh:mm:ss.s', 'hh:mm:ss.s', 'hh:mm:ss.s',
+                'hh:mm:ss', 'hh:mm:ss', 'hh:mm:ss', 'hh:mm:ss',
+                'hh:mm:ss', 'hh:mm:ss', 'hh:mm:ss', 'hh:mm',
+                'hh:mm',    'hh:mm',    'hh:mm',    'hh:mm',
+                'hh',       'hh',       'hh'])
+            DecFormatters = np.array([
+                'dd:mm:ss.s', 'dd:mm:ss.s', 'dd:mm:ss.s',
+                'dd:mm:ss', 'dd:mm:ss', 'dd:mm:ss', 'dd:mm:ss',
+                'dd:mm:ss', 'dd:mm:ss', 'dd:mm:ss', 'dd:mm',
+                'dd:mm',    'dd:mm',    'dd:mm',    'dd:mm',
+                'dd',       'dd',       'dd'])
+
+            # Define a set of minor tick frequencies associated with each
+            # major tick spacing
+            minorTicksFreqs = np.array([
+                10, 4, 5, 10, 4, 5, 10, 3, 10, 15, 10, 4, 5, 10, 15, 10, 4, 5])
+
+            # Figure out which major tick spacing provides the FEWEST ticks
+            # but greater than 3
+            y_cen, x_cen = 0.5*np.array(self.arr.shape)
+            RA_cen, Dec_cen = wcs.wcs_pix2world([x_cen], [y_cen], 0)
+
+            # Find the index of the proper tick spacing for each axis
+            RAspacingInd  = np.max(np.where(np.floor(
+                (width/(15*spacingOptions*np.cos(np.deg2rad(Dec_cen)))).value) >= 2))
+            DecSpacingInd = np.max(np.where(np.floor(
+                (height/spacingOptions).value) >= 3))
+
+            # Select the actual RA and Dec spacing
+            RAspacing  = 15*spacingOptions[RAspacingInd]
+            DecSpacing = spacingOptions[DecSpacingInd]
+
+            # Select the specific formatting for this tick interval
+            RAformatter  = RAformatters[RAspacingInd]
+            DecFormatter = DecFormatters[DecSpacingInd]
+
+            # And now select the minor tick frequency
+            RAminorTicksFreq  = minorTicksFreqs[RAspacingInd]
+            DecMinorTicksFreq = minorTicksFreqs[DecSpacingInd]
+
+        return ((RAspacing, DecSpacing),
+            (RAformatter, DecFormatter),
+            (RAminorTicksFreq, DecMinorTicksFreq))
+
     def show(self, axes=None, origin='lower', noShow=False,
              scale='linear', vmin=None, vmax=None,
-             ticks=True, **kwargs):
+             ticks=True, cmap='viridis', **kwargs):
         """Displays the image to the user for interaction (including clicking?)
         This method includes all the same keyword arguments as the "imshow()"
         method from matplotlip.pyplot. This allows the user to control how the
@@ -1984,16 +2117,17 @@ class AstroImage(object):
                  allows the user to specify if if the image stretch should be
                  linear or log space
         """
-
         # Set the scaling for the image
         if scale == 'linear':
             # Compute a display range in terms of the image noise level
-            showArr = self.arr
             mean, median, stddev = sigma_clipped_stats(self.arr.flatten())
             if vmin == None: vmin = median - 2*stddev
             if vmax == None: vmax = median + 10*stddev
+
+            # Steup the array to display
+            showArr    = self.arr
+            normalizer = mcol.Normalize(vmin = vmin, vmax = vmax)
         elif scale == 'log':
-            showArr = np.log10(self.arr)
             if vmin == None:
                 vmin = -6
             else:
@@ -2003,33 +2137,21 @@ class AstroImage(object):
             else:
                 vmax = np.log10(vmax)
 
-            print(vmin)
-            print(vmax)
-            print(np.nanmin(showArr))
-            print(np.nanmax(showArr))
-        elif scale == 'asinh':
-            showArr = np.arcsinh(self.arr)
-            if vmin == None:
-                vmin = np.min(showArr)
-            else:
-                vmin = np.arcsinh(vmin)
-            if vmax == None:
-                vmax = np.max(showArr)
-            else:
-                vmax = np.arcsinh(vmax)
+            # Clip the array (so there are no logs of negative values)
+            showArr    = np.clip(self.arr, vmin, vmax)
+            normalizer = mcol.LogNorm(vmin = vmin, vmax = vmax)
         else:
-            print('The provided "scale" keyword is not recognized')
-            pdb.set_trace()
+            raise ValueError('The provided "scale" keyword is not recognized')
 
         # Create the figure and axes for displaying the image
         if axes is None:
-            # TODO add a check for WCS values
+            # TODO add a check for WCS values(???)
 
             # Create a new figure and axes
             wcs  = WCS(self.header)
             fig  = plt.figure(figsize = (8,8))
             if wcs.has_celestial:
-                axes = fig.add_subplot(1,1,1, projection=wcs)
+                axes = fig.add_subplot(1, 1, 1, projection=wcs)
 
                 # Set the axes linewidth
                 axes.coords.frame.set_linewidth(2)
@@ -2042,63 +2164,40 @@ class AstroImage(object):
                 Dec_ax.set_axislabel('Dec [J2000]',
                                      fontsize=12, fontweight='bold', minpad=-0.4)
 
-                # Set tick labels
-                RA_ax.set_major_formatter('hh:mm')
-                Dec_ax.set_major_formatter('dd:mm')
+                # Retrieve the apropriate spacing and formats
+                spacing, formatter, minorTicksFreq = self.get_ticks()
 
                 # Set the tick width and length
-                RA_ax.set_ticks(size=12, width=2)
-                Dec_ax.set_ticks(size=12, width=2)
+                RA_ax.set_ticks(spacing=spacing[0], size=12, width=2)
+                Dec_ax.set_ticks(spacing=spacing[1], size=12, width=2)
+
+                # Set tick label formatters
+                RA_ax.set_major_formatter(formatter[0])
+                Dec_ax.set_major_formatter(formatter[1])
 
                 # Set the other tick label format
                 RA_ax.set_ticklabel(fontsize=12, fontweight='demibold')
                 Dec_ax.set_ticklabel(fontsize=12, fontweight='demibold')
 
-                # Turn on minor ticks
+                # Turn on minor ticks and set number of minor ticks
                 RA_ax.display_minor_ticks(True)
-                RA_ax.set_minor_frequency(6)
                 Dec_ax.display_minor_ticks(True)
-                RA_ax.set_minor_frequency(6)
+                RA_ax.set_minor_frequency(minorTicksFreq[0])
+                Dec_ax.set_minor_frequency(minorTicksFreq[1])
             else:
                 axes = fig.add_subplot(1,1,1)
             # Set the axes line properties
             for axis in ['top','bottom','left','right']:
                 axes.spines[axis].set_linewidth(4)
 
-            # # Label the axes establish minor ticks.
-            # RA_ax  = axes.coords[0]
-            # Dec_ax = axes.coords[1]
-            # RA_ax.set_axislabel('RA [J2000]',
-            #                     fontsize=12, fontweight='bold')
-            # Dec_ax.set_axislabel('Dec [J2000]',
-            #                      fontsize=12, fontweight='bold', minpad=-0.4)
-            #
-            # # Set tick labels
-            # RA_ax.set_major_formatter('hh:mm')
-            # Dec_ax.set_major_formatter('dd:mm')
-            #
-            # # Set the tick width and length
-            # RA_ax.set_ticks(size=12, width=2)
-            # Dec_ax.set_ticks(size=12, width=2)
-            #
-            # # Set the other tick label format
-            # RA_ax.set_ticklabel(fontsize=12, fontweight='demibold')
-            # Dec_ax.set_ticklabel(fontsize=12, fontweight='demibold')
-            #
-            # # Turn on minor ticks
-            # RA_ax.display_minor_ticks(True)
-            # RA_ax.set_minor_frequency(6)
-            # Dec_ax.display_minor_ticks(True)
-            # RA_ax.set_minor_frequency(6)
-
             # Put the image in its place
-            axIm = axes.imshow(showArr, origin=origin, vmin=vmin, vmax=vmax,
-                               **kwargs)
+            axIm = axes.imshow(showArr, origin=origin, norm = normalizer,
+                               cmap=cmap, **kwargs)
         else:
             # Use the provided axes
             fig  = axes.figure
-            axIm = axes.imshow(showArr, origin=origin, vmin=vmin, vmax=vmax,
-                               **kwargs)
+            axIm = axes.imshow(showArr, origin=origin, norm = normalizer,
+                               cmap=cmap, **kwargs)
 
         # Display the image to the user, if requested
         if not noShow:

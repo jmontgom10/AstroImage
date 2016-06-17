@@ -515,6 +515,10 @@ def combine_images(imgList, output = 'MEAN',
         outImg.header['NAXIS1'] = outImg.arr.shape[1]
         outImg.header['NAXIS2'] = outImg.arr.shape[0]
 
+        # Compute an "average" air-mass to attribute to the final image
+        airMasses = [img.header['AIRMASS'] for img in imgList]
+        outImg.header['AIRMASS'] = np.mean(airMasses)
+
         # Finally return the final result
         return outImg
     else:
@@ -530,7 +534,7 @@ def astrometry(img, override = False):
     # Test if the astrometry has already been solved
     try:
         # Try to grab the 'WCSAXES' card from the header
-        img.header['WCSAXES']
+        tmp = img.header['WCSAXES']
 
         # If the user forces an override, then set doAstrometry=True
         doAstrometry = override
@@ -718,6 +722,7 @@ def astrometry(img, override = False):
     else:
         print('Astrometry for {0:s} already solved.'.
           format(os.path.basename(img.filename)))
+        return img, True
 
 def build_starMask(arr, sigmaThresh = 2.0, neighborThresh = 2, kernelSize = 9):
     '''This function will idenify in-star pixels using a local median-filtered.
