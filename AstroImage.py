@@ -1317,18 +1317,22 @@ class AstroImage(object):
         # Update the header information if possible
         if hasattr(self, 'header'):
             tmpHeader = self.header.copy()
-            if 'WCSAXES' in tmpHeader.keys():
+
+            # Check if the header has good WCS
+            wcs = WCS(tmpHeader)
+            if wcs.has_celestial:
                 # Parse the pad_width parameter
                 if len(pad_width) > 1:
                     # If separate x and y paddings were specified, check them
-                    xPad, yPad = pad_width
+                    yPad, xPad = pad_width
                     # Grab only theh left-padding values
                     if len(xPad) > 1: xPad = xPad[0]
                     if len(yPad) > 1: yPad = yPad[0]
                 else:
+                    pdb.set_trace()
                     xPad, yPad = pad_width, pad_width
 
-                # Now apply the actual updates
+                # Now apply the actual updates to the header
                 tmpHeader['CRPIX1'] = self.header['CRPIX1'] + xPad
                 tmpHeader['CRPIX2'] = self.header['CRPIX2'] + yPad
                 tmpHeader['NAXIS1'] = self.arr.shape[1]
