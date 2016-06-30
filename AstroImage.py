@@ -7,6 +7,7 @@ from scipy import ndimage
 from scipy.ndimage.filters import median_filter
 import scipy.optimize as opt
 import scipy.stats
+import matplotlib as mpl
 import matplotlib.colors as mcol
 import matplotlib.pyplot as plt
 from astropy.modeling import models, fitting
@@ -19,8 +20,8 @@ import warnings
 # Catch the "RuntimeWarning" in the magic methods
 # Catch the "UserWarning" in the init procedure
 
-#from astropy.wcs import WCS
-from wcsaxes import WCS
+from astropy.wcs import WCS
+from wcsaxes import WCSAxes
 from astropy.coordinates import SkyCoord
 from astropy.wcs.utils import pixel_to_skycoord, skycoord_to_pixel
 from astropy.wcs.utils import proj_plane_pixel_scales
@@ -28,6 +29,34 @@ from photutils import daofind
 
 # Finally import the associated "image_tools" python module
 import image_tools
+
+### DEFINE TWO FUNCTIONS TO BE USED IN TREATING PSF GAUSSIANS
+def build_cov_matrix(sx, sy, rhoxy):
+    # build the covariance matrix from sx, sy, and rhoxy
+    cov_matrix = np.matrix([[sx**2,       rhoxy*sx*sy],
+                            [rhoxy*sx*sy, sy**2      ]])
+
+    return cov_matrix
+
+# Define two functions for swapping between (sigma_x, sigma_y, theta) and
+# (sigma_x, sigma_y, rhoxy)
+def convert_angle_to_covariance(sx, sy, theta):
+    # Define the rotation matrix using theta
+    rotation_matrix = np.matrix([[np.cos(theta), -np.sin(theta)],
+                                 [np.sin(theta),  np.cos(theta)]])
+
+    # Build the eigen value matrix
+    lamda_matrix = np.matrix(np.diag([sx, sy]))
+
+    # Construct the covariance matrix
+    cov_matrix = rotation_matrix*lamda_matrix*lamda_matrix*rotation_matrix.I
+
+    # Extract the variance and covariances
+    sx1, sy1 = np.sqrt(cov_matrix.diagonal().A1)
+    rhoxy    = cov_matrix[0,1]/(sx1*sy1)
+
+    return sx1, sy1, rhoxy
+###
 
 class AstroImage(object):
     """An object which stores an image array and header and provides a
@@ -41,7 +70,9 @@ class AstroImage(object):
             if filename[0:2] == ('.' + os.path.sep):
                 filename = os.path.join(os.getcwd(), filename[2:])
             try:
-                HDUlist     = fits.open(filename, do_not_scale_image_data=True)
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    HDUlist = fits.open(filename, do_not_scale_image_data=True)
             except:
                 raise FileNotFoundError('File {0} does not exist'.format(filename))
 
@@ -754,146 +785,392 @@ class AstroImage(object):
         # Write file to disk
         HDUlist.writeto(filename, clobber=True)
 
-    def get_PSF(self, shape='gaussian'):
-        """This method analyses the stars in the image and returns the PSF
-        properties of the image. The default mode fits 2D-gaussians to the
+    def get_sources(self, satLimit=16000, crowdThresh=0, edgeThresh=0):
+        """This method simply uses the daofind algorithm to extract source
+        positions. It will also test for saturation using a default value of
+        16000 ADU. It will also optionally test for crowded stars and omit them.
+        """
+        # Double check that edge-stars will be rejected before checking for
+        # crowding...
+        if edgeThresh < crowdThresh:
+            edgeThresh = crowdThresh + 1
+
+        # Ensure there are no problematic values
+        self1   = self.copy()
+        badPix  = np.logical_not(np.isfinite(self1.arr))
+        if np.sum(badPix) > 0:
+            badInds  = np.where(badPix)
+            self1.arr[badInds] = np.nanmin(self1.arr)
+
+        # Grab the image sky statistics
+        mean, median, std = sigma_clipped_stats(self1.arr, sigma=3.0, iters=5)
+
+        # Start by finding all the stars in the image
+        sources = daofind(np.nan_to_num(self1.arr) - median,
+            fwhm=3.0, threshold=5.0*std)
+
+        # Grab the image shape for later use
+        ny, nx = self1.arr.shape
+
+        # Cut out edge stars if requested
+        if edgeThresh > 0:
+            nonEdgeStars = sources['xcentroid'] > edgeThresh
+            nonEdgeStars = np.logical_and(nonEdgeStars,
+                sources['xcentroid'] < nx - edgeThresh - 1)
+            nonEdgeStars = np.logical_and(nonEdgeStars,
+                sources['ycentroid'] > edgeThresh)
+            nonEdgeStars = np.logical_and(nonEdgeStars,
+                sources['ycentroid'] < ny - edgeThresh - 1)
+
+            # Cull the sources list to only include non-edge stars
+            if np.sum(nonEdgeStars) > 0:
+                nonEdgeInds = np.where(nonEdgeStars)
+                sources = sources[nonEdgeInds]
+            else:
+                raise IndexError('There are no non-edge stars')
+
+        # Generate a map of pixel positions
+        yy, xx = np.mgrid[0:ny, 0: nx]
+
+        # Perform the saturation test
+        notSaturated = []
+        for source in sources:
+            # Extract the position for this source
+            xs, ys = source['xcentroid'], source['ycentroid']
+
+            # Compute the distance from this source
+            dists = np.sqrt((xx - xs)**2 + (yy - ys)**2)
+
+            # Grab the values within 15 pixels of this source, and test if the
+            # source is saturated
+            nearInds = np.where(dists < 15.0)
+            notSaturated.append(self1.arr[nearInds].max() < satLimit)
+
+        # Cull the sources list to ONLY include non-saturated sources
+        if np.sum(notSaturated) > 0:
+            notSaturatedInds = np.where(notSaturated)
+            sources = sources[notSaturatedInds]
+        else:
+            raise IndexError('No sources passed the saturation test')
+
+        # Perform the crowding test
+        isolatedSource = []
+        if crowdThresh > 0:
+            # Generate pixel positions for the patch_data
+            yy, xx = np.mgrid[0:np.int(crowdThresh), 0:np.int(crowdThresh)]
+
+            # Loop through the sources and test if they're crowded
+            for source in sources:
+                # Extract the posiition for this source
+                xs, ys = source['xcentroid'], source['ycentroid']
+
+                # Compute the distance between other sources and this source
+                dists = np.sqrt((sources['xcentroid'] - xs)**2 +
+                                (sources['ycentroid'] - ys)**2)
+
+                # Test if there are any OTHER stars within crowdThresh
+                isolatedBool1 = np.sum(dists < crowdThresh) < 2
+
+                # Do a double check to see if there are any EXTRA sources
+                # Start by cutting out the patch surrounding this star
+                # Establish the cutout bondaries
+                btCut = np.int(np.round(ys - np.floor(0.5*crowdThresh)))
+                tpCut = np.int(np.round(btCut + crowdThresh))
+                lfCut = np.int(np.round(xs - np.floor(0.5*crowdThresh)))
+                rtCut = np.int(np.round(lfCut + crowdThresh))
+
+                # Cut out that data and subtract the floor.
+                patch_data  = self1.arr[btCut:tpCut,lfCut:rtCut]
+                patch_data -= patch_data.min()
+
+                # Null out data beyond the crowdThresh from the center
+                xs1, ys1 = xs - lfCut, ys - btCut
+                pixDist  = np.sqrt((xx - xs1)**2 + (yy - ys1)**2)
+                nullInds = np.where(pixDist > crowdThresh)
+
+                # Null those pixels
+                patch_data[nullInds] = 0
+
+                with warnings.catch_warnings():
+                    # Ignore model linearity warning from the fitter
+                    warnings.simplefilter('ignore')
+                    # Use the find routine to check for other sources in this patch
+                    sources1 = daofind(patch_data, fwhm=3.0, threshold=3.0*std)
+
+                # Test if more than one source was found
+                isolatedBool2 = len(sources1) < 2
+
+                # Check if there are other sources nearby
+                if isolatedBool1 and isolatedBool2:
+                    isolatedSource.append(True)
+                else:
+                    isolatedSource.append(False)
+
+
+            # Cull the sources list to ONLY include non-crowded sources
+            if np.sum(isolatedSource) > 0:
+                isolatedInds = np.where(isolatedSource)
+                sources = sources[isolatedInds]
+            else:
+                raise IndexError('No sources passed the crowding test')
+
+        # Grab the x, y positions of the sources and return as arrays
+        xs, ys = sources['xcentroid'].data, sources['ycentroid'].data
+
+        return xs, ys
+
+    def get_psf(self):
+        """This method analyses the stars in the image and returns the average
+        PSF properties of the image. The default mode fits 2D-gaussians to the
         brightest, isolated stars in the image. Future versions could use there
         2MASS sersic profile, etc...
         """
-        # Grab the image sky statistics
-        mean, median, std = sigma_clipped_stats(self.arr, sigma=3.0, iters=5)
+        # Set the patch size to use in fitting gaussians (e.g. 20x20 pixels)
+        starPatch = 20
 
-        # Start by finding all the stars in the image
-        sources = daofind(self.arr - median, fwhm=3.0, threshold=15.0*std)
+        # Find the isolated sources for gaussian fitting
+        crowdThresh = np.sqrt(2)*0.5*starPatch
+        xsrcs, ysrcs = self.get_sources(
+            crowdThresh = crowdThresh,
+            edgeThresh = starPatch + 1)
 
-        # Eliminate stars near the image edge
-        ny, nx = self.arr.shape
-        xStars, yStars = sources['xcentroid'].data, sources['ycentroid'].data
-        badXstars = np.logical_or(xStars < 50, xStars > nx - 50)
-        badYstars = np.logical_or(yStars < 50,  yStars > ny - 50)
-        edgeStars = np.logical_or(badXstars, badYstars)
-        if np.sum(edgeStars) > 0:
-            sources = sources[np.where(np.logical_not(edgeStars))]
+        # Build a gaussian + 2Dpolynomial(1st degree) model to fit to patches
+        # Build a gaussian model for fitting stars
+        gauss_init = models.Gaussian2D(
+            amplitude=1000.0,
+            x_mean=10.0,
+            y_mean=10.0,
+            x_stddev=3.0,
+            y_stddev=3.0,
+            theta=0.0)
+        bkg_init   = models.Polynomial2D(1)
+        patch_init = gauss_init + bkg_init
+        fitter     = fitting.LevMarLSQFitter()
 
-        # Eliminate any stars with neighbors within 30 pixels
-        keepFlags = np.ones_like(sources['flux'].data, dtype='bool')
-        for i, star in enumerate(sources):
-            # Compute the distance between this star and other stars
-            xs, ys = star['xcentroid'], star['ycentroid']
-            dist = np.sqrt((sources['xcentroid'].data - xs)**2 +
-                           (sources['ycentroid'].data - ys)**2)
+        # Setup the pixel coordinates for the star patch
+        yy, xx = np.mgrid[0:starPatch, 0:starPatch]
 
-            # If there is another star within 20 pixels, then don't keep this
-            if np.sum(dist < 30) > 1:
-                keepFlags[i] = False
+        # Loop through the sources and fit gaussians to each patch.
+        # Store the background subtracted patches for a final average img.
+        sxList    = []
+        syList    = []
+        patchList = []
+        for xs, ys in zip(xsrcs, ysrcs):
+            # Start by cutting out the patch surrounding this star
+            # Establish the cutout bondaries
+            btCut = np.int(np.round(ys - np.floor(0.5*starPatch)))
+            tpCut = np.int(np.round(btCut + starPatch))
+            lfCut = np.int(np.round(xs - np.floor(0.5*starPatch)))
+            rtCut = np.int(np.round(lfCut + starPatch))
 
-        # Cull the list of sources to only include "isolated" stars
-        if np.sum(keepFlags) > 0:
-            sources = sources[np.where(keepFlags)]
+            # Cut out the star patch
+            patch_data = self.arr[btCut:tpCut, lfCut:rtCut].copy()
+
+            # Ignore model warning from the fitter
+            with warnings.catch_warnings():
+                # Fit the model to the patch
+                warnings.simplefilter('ignore')
+                patch_model = fitter(patch_init, xx, yy, patch_data)
+
+            # Store the gaussian component eigen-values
+            sxList.append(patch_model.x_stddev_0.value)
+            syList.append(patch_model.y_stddev_0.value)
+
+            # Build a 2D polynomial background to subtract
+            bkg_model = models.Polynomial2D(1)
+
+            # Transfer the background portion of the patch_model to the
+            # polynomial plane model.
+            bkg_model.c0_0 = patch_model.c0_0_1
+            bkg_model.c1_0 = patch_model.c1_0_1
+            bkg_model.c0_1 = patch_model.c0_1_1
+
+            # Subtract and renormalize the star patch
+            patch_data1  = patch_data - bkg_model(xx, yy)
+            patch_data1 -= patch_data1.min()
+            patch_data1 /= patch_data1.max()
+
+            # Store the patch in the patchList
+            patchList.append(patch_data1)
+
+        # Convert the sxList, syList, and patchList into an arrays
+        sxArr    = np.array(sxList)
+        syArr    = np.array(syList)
+        patchArr = np.array(patchList)
+
+        # Test for good sx and sy eigen-values
+        meanSX, medianSX, stdSX = sigma_clipped_stats(sxArr)
+        meanSY, medianSY, stdSY = sigma_clipped_stats(syArr)
+
+        # Find the indices of the good sx and sy values (well behaved gaussians)
+        goodSX   = np.abs(sxArr - medianSX)/stdSX < 2.5
+        goodSY   = np.abs(syArr - medianSY)/stdSY < 2.5
+        goodSXSY = np.logical_and(goodSX, goodSY)
+
+        # Cut out any patches with bad sx or bad sy values
+        if np.sum(goodSXSY) > 0:
+            goodInds = (np.where(goodSXSY))[0]
+            patchArr = patchArr[goodInds, :, :]
         else:
-            print('No sources survided the neighbor test')
-            pdb.set_trace()
+            raise IndexError('There are no well fitted stars')
 
-        # Sort the stars by brightness
-        sortInds = (sources['flux'].argsort())[::-1]
-        sources = sources[sortInds]
+        # Compute an "median patch"
+        patch_data = np.median(patchArr, axis=0)
 
-        # Prep a local 2D gaussian function for fitting purposes
-        # def gauss2d(xy, amp, x0, y0, a, b, c):
-        #     x, y = xy
-        #     inner = a * (x - x0)**2
-        #     inner += 2 * b * (x - x0)**2 * (y - y0)**2
-        #     inner += c * (y - y0)**2
-        #     return amp * np.exp(-inner)
+        # Finllay, re-fit a gaussian to this median patch
+        # Ignore model warning from the fitter
+        with warnings.catch_warnings():
+            # Fit the model to the patch
+            warnings.simplefilter('ignore')
+            patch_model = fitter(patch_init, xx, yy, patch_data)
 
-        def gauss2d(xy, base, height, center_x, center_y, width_x, width_y, rotation):
-            """Returns a gaussian function with the given parameters"""
-            # Parse the xy vector
-            x, y     = xy
+        # Modulate the fitted theta value into a reasonable range
+        goodTheta = (patch_model.theta_0.value % (2*np.pi))
+        patch_model.theta_0 = goodTheta
 
-            # Ensure the parameters are floats
-            width_x = float(width_x)
-            width_y = float(width_y)
+        # Build a 2D polynomial background to subtract
+        bkg_model = models.Polynomial2D(1)
 
-            xp = x - center_x
-            yp = y - center_y
+        # Transfer the background portion of the patch_model to the
+        # polynomial plane model.
+        bkg_model.c0_0 = patch_model.c0_0_1
+        bkg_model.c1_0 = patch_model.c1_0_1
+        bkg_model.c0_1 = patch_model.c0_1_1
 
-            # Convert rotation to radians and apply the rotation matrix
-            # to center coordinates
-            rotation = np.deg2rad(rotation)
-            # center_x = center_x * np.cos(rotation) - center_y * np.sin(rotation)
-            # center_y = center_x * np.sin(rotation) + center_y * np.cos(rotation)
+        # Subtract and renormalize the star patch
+        patch_data1  = patch_data - bkg_model(xx, yy)
+        patch_data1 -= patch_data1.min()
+        patch_data1 /= np.sum(patch_data1)
 
-            # Rotate the xy coordinates
-            xp1 = xp * np.cos(rotation) - yp * np.sin(rotation)
-            yp1 = xp * np.sin(rotation) + yp * np.cos(rotation)
+        # Return the fitted PSF values
+        sx, sy, theta = (patch_model.x_stddev_0.value,
+                         patch_model.y_stddev_0.value,
+                         patch_model.theta_0.value)
 
-            # Compute the gaussian values
-            g = base + height*np.exp(-((xp1/width_x)**2 + (yp1/width_y)**2)/2.)
-            return g
+        return ({'sx':sx, 'sy':sy, 'theta':theta}, patch_data1)
 
-        # Fit 2D-gaussians to the 10 brightest, isolated stars
-        yy, xx = np.mgrid[0:41, 0:41]
-        sxList  = list()
-        syList  = list()
-        rotList = list()
-        for i, star in enumerate(sources):
-            # Fit a 2D gaussian to each star
-            # First cut out a square array centered on the star
-            xs, ys = star['xcentroid'], star['ycentroid']
-            lf = np.int(xs.round()) - 20
-            rt = lf + 41
-            bt = np.int(ys.round()) - 20
-            tp = bt + 41
-            starArr = self.arr[bt:tp,lf:rt]
-
-            # Package xy, zobs for fitting
-            xy   = np.array([xx.ravel(), yy.ravel()])
-            zobs = starArr.ravel()
-
-            # Guess the initial parameters and perform the fit
-            #              base, amp,   xc,   yc,   sx,  sy,  rot
-            arrMax      = np.max(zobs)
-            base1       = np.median(zobs)
-            guessParams = [base1,    arrMax,   21.0,   21.0,   2.0,  2.0,   0.0]
-            boundParams = ((-np.inf, 0.0,    -100.0, -100.0,   0.1,  0.1,   0.0),
-                           (+np.inf, np.inf, +100.0, +100.0,  10.0, 10.0, 360.0))
-            try:
-                fitParams, uncert_cov = opt.curve_fit(gauss2d, xy, zobs,
-                    p0=guessParams, bounds=boundParams)
-            except:
-                print("Star {0} could not be fit".format(i))
-
-            # Test goodness of fitCenter
-            fitX, fitY = fitParams[2:4]
-            fitCenter  = np.sqrt((21 - fitParams[2])**2 + (21 - fitParams[3])**2)
-            goodStar   = ((fitCenter < 3.0) and
-                          (fitParams[4] > 0.5) and (fitParams[4] < 3.0) and
-                          (fitParams[5] > 0.5) and (fitParams[5]) < 3.0)
-
-            if goodStar:
-                # Store the relevant parameters
-                sxList.append(fitParams[4])
-                syList.append(fitParams[5])
-                rotList.append(fitParams[6])
-            # else:
-            #     # Check output
-            #     print('Star {0} has bad fit'.format(i))
-            #     plt.ion()
-            #     plt.figure()
-            #     plt.imshow(starArr)
-            #
-            #     test = gauss2d(xy, *fitParams)
-            #     test.shape = xx.shape
-            #     plt.figure()
-            #     plt.imshow(test)
-            #     pdb.set_trace()
-            #     plt.close('all')
-
-        # Compute an average gaussian shape and return to user
-        PSFparams = (np.median(sxList), np.median(syList), np.median(rotList))
-
-        return PSFparams
+    # def get_PSF_old(self, shape='gaussian'):
+    #     """This method analyses the stars in the image and returns the PSF
+    #     properties of the image. The default mode fits 2D-gaussians to the
+    #     brightest, isolated stars in the image. Future versions could use there
+    #     2MASS sersic profile, etc...
+    #     """
+    #     # Grab the image sky statistics
+    #     mean, median, std = sigma_clipped_stats(self.arr, sigma=3.0, iters=5)
+    #
+    #     # Start by finding all the stars in the image
+    #     sources = daofind(self.arr - median, fwhm=3.0, threshold=15.0*std)
+    #
+    #     # Eliminate stars near the image edge
+    #     ny, nx = self.arr.shape
+    #     xStars, yStars = sources['xcentroid'].data, sources['ycentroid'].data
+    #     badXstars = np.logical_or(xStars < 50, xStars > nx - 50)
+    #     badYstars = np.logical_or(yStars < 50,  yStars > ny - 50)
+    #     edgeStars = np.logical_or(badXstars, badYstars)
+    #     if np.sum(edgeStars) > 0:
+    #         sources = sources[np.where(np.logical_not(edgeStars))]
+    #
+    #     # Eliminate any stars with neighbors within 30 pixels
+    #     keepFlags = np.ones_like(sources['flux'].data, dtype='bool')
+    #     for i, star in enumerate(sources):
+    #         # Compute the distance between this star and other stars
+    #         xs, ys = star['xcentroid'], star['ycentroid']
+    #         dist = np.sqrt((sources['xcentroid'].data - xs)**2 +
+    #                        (sources['ycentroid'].data - ys)**2)
+    #
+    #         # If there is another star within 20 pixels, then don't keep this
+    #         if np.sum(dist < 30) > 1:
+    #             keepFlags[i] = False
+    #
+    #     # Cull the list of sources to only include "isolated" stars
+    #     if np.sum(keepFlags) > 0:
+    #         sources = sources[np.where(keepFlags)]
+    #     else:
+    #         print('No sources survided the neighbor test')
+    #         pdb.set_trace()
+    #
+    #     # Sort the stars by brightness
+    #     sortInds = (sources['flux'].argsort())[::-1]
+    #     sources = sources[sortInds]
+    #
+    #     def gauss2d(xy, base, height, center_x, center_y, width_x, width_y, rotation):
+    #         """Returns a gaussian function with the given parameters"""
+    #         # Parse the xy vector
+    #         x, y     = xy
+    #
+    #         # Ensure the parameters are floats
+    #         width_x = float(width_x)
+    #         width_y = float(width_y)
+    #
+    #         xp = x - center_x
+    #         yp = y - center_y
+    #
+    #         # Convert rotation to radians and apply the rotation matrix
+    #         # to center coordinates
+    #         rotation = np.deg2rad(rotation)
+    #         # center_x = center_x * np.cos(rotation) - center_y * np.sin(rotation)
+    #         # center_y = center_x * np.sin(rotation) + center_y * np.cos(rotation)
+    #
+    #         # Rotate the xy coordinates
+    #         xp1 = xp * np.cos(rotation) - yp * np.sin(rotation)
+    #         yp1 = xp * np.sin(rotation) + yp * np.cos(rotation)
+    #
+    #         # Compute the gaussian values
+    #         g = base + height*np.exp(-((xp1/width_x)**2 + (yp1/width_y)**2)/2.)
+    #         return g
+    #
+    #     # Fit 2D-gaussians to the 10 brightest, isolated stars
+    #     yy, xx = np.mgrid[0:41, 0:41]
+    #     sxList  = list()
+    #     syList  = list()
+    #     rotList = list()
+    #     for i, star in enumerate(sources):
+    #         # Fit a 2D gaussian to each star
+    #         # First cut out a square array centered on the star
+    #         xs, ys = star['xcentroid'], star['ycentroid']
+    #         lf = np.int(xs.round()) - 20
+    #         rt = lf + 41
+    #         bt = np.int(ys.round()) - 20
+    #         tp = bt + 41
+    #         starArr = self.arr[bt:tp,lf:rt]
+    #
+    #         # Package xy, zobs for fitting
+    #         xy   = np.array([xx.ravel(), yy.ravel()])
+    #         zobs = starArr.ravel()
+    #
+    #         # Guess the initial parameters and perform the fit
+    #         #              base, amp,   xc,   yc,   sx,  sy,  rot
+    #         arrMax      = np.max(zobs)
+    #         base1       = np.median(zobs)
+    #         guessParams = [base1,    arrMax,   21.0,   21.0,   2.0,  2.0,   0.0]
+    #         boundParams = ((-np.inf, 0.0,    -100.0, -100.0,   0.1,  0.1,   0.0),
+    #                        (+np.inf, np.inf, +100.0, +100.0,  10.0, 10.0, 360.0))
+    #         try:
+    #             fitParams, uncert_cov = opt.curve_fit(gauss2d, xy, zobs,
+    #                 p0=guessParams, bounds=boundParams)
+    #         except:
+    #             print("Star {0} could not be fit".format(i))
+    #
+    #         # Test goodness of fitCenter
+    #         fitX, fitY = fitParams[2:4]
+    #         fitCenter  = np.sqrt((21 - fitParams[2])**2 + (21 - fitParams[3])**2)
+    #         goodStar   = ((fitCenter < 3.0) and
+    #                       (fitParams[4] > 0.5) and (fitParams[4] < 3.0) and
+    #                       (fitParams[5] > 0.5) and (fitParams[5]) < 3.0)
+    #
+    #         if goodStar:
+    #             # Store the relevant parameters
+    #             sxList.append(fitParams[4])
+    #             syList.append(fitParams[5])
+    #             rotList.append(fitParams[6])
+    #
+    #     # Compute an average gaussian shape and return to user
+    #     PSFparams = (np.median(sxList),
+    #                  np.median(syList),
+    #                  np.arctan2(np.median(np.sin(rotList)),
+    #                             np.median(np.cos(rotList))))
+    #
+    #     return PSFparams
 
     def overscan_correction(self, overscanPos, sciencePos,
                             overscanPolyOrder = 3):
@@ -1619,24 +1896,517 @@ class AstroImage(object):
 
         return allGood
 
-    def align(self, img, fractionalShift=False, mode='wcs',
-              offsets=False):
+    def clear_astrometry(self):
+        """Delete the header values pertaining to the astrometry.
+        """
+        if hasattr(self, 'header'):
+            # Double make sure that there is no other WCS data in the header
+            if 'WCSAXES' in self.header.keys():
+                del self.header['WCSAXES']
+
+            if len(self.header['CDELT*']) > 0:
+                del self.header['CDELT*']
+
+            if len(self.header['CUNIT*']) > 0:
+                del self.header['CUNIT*']
+
+            if len(self.header['*POLE']) > 0:
+                del self.header['*POLE']
+
+            if len(self.header['CD*_*']) > 0:
+                del self.header['CD*_*']
+
+            if len(self.header['PC*_*']) > 0:
+                del self.header['PC*_*']
+
+            if len(self.header['CRPIX*']) > 0:
+                del self.header['CRPIX*']
+
+            if len(self.header['CRVAL*']) > 0:
+                del self.header['CRVAL*']
+
+            if len(self.header['CTYPE*']) > 0:
+                del self.header['CTYPE*']
+
+    def get_img_offsets(self, img, subPixel=False, mode='wcs'):
+        """A method to compute the displacement offsets between two the "self"
+        AstroImage and the "img" AstroImage.
+        """
+        ########################################################################
+        #################### HANDLE WCS MODE IMAGE OFFSETS #####################
+        ########################################################################
+        if mode.lower() == 'wcs':
+            # Grab self image WCS and pixel center
+            wcs1   = WCS(self.header)
+            wcs2   = WCS(img.header)
+            x1     = np.mean([wcs1.wcs.crpix[0], wcs2.wcs.crpix[0]])
+            y1     = np.mean([wcs1.wcs.crpix[1], wcs2.wcs.crpix[1]])
+
+            # Convert pixels to sky coordinates
+            RA1, Dec1 = wcs1.all_pix2world(x1, y1, 0)
+
+            # Grab the WCS of the alignment image and convert back to pixels
+            x2, y2 = wcs2.all_world2pix(RA1, Dec1, 0)
+            x2, y2 = float(x2), float(y2)
+
+            # Compute the image possition offset vector
+            dx = x2 - x1
+            dy = y2 - y1
+
+            if subPixel:
+                # If a fractional shift is requested, then simply store these
+                # values for later use
+                pass
+            else:
+                # Otherwise round shifts to nearest integer
+                dx = np.int(np.round(dx))
+                dy = np.int(np.round(dy))
+        ########################################################################
+        ############# HANDLE CROSS-CORRELATION MODE IMAGE OFFSETS ##############
+        ########################################################################
+        elif mode == 'cross_correlate':
+            # n. b. This method appears to produce results accurate to better
+            # than 0.1 pixel as determined by simply copying an image, shifting
+            # it an arbitrary amount, and attempting to recover that shift.
+            newSelf = self.copy()
+            newImg  = img.copy()
+
+            # Just to be sure everything works out properly, let's test to see if
+            # these two images are the same shape.
+            if newImg.arr.shape != newSelf.arr.shape:
+                # Pad the arrays to make sure they are the same size
+                ny1, nx1 = self.arr.shape
+                ny2, nx2 = img.arr.shape
+                if (nx1 > nx2):
+                    padX    = nx1 - nx2
+                    newImg.pad(((0,0), (0,padX)), mode='constant')
+                    del padX
+                if (nx1 < nx2):
+                    padX    = nx2 - nx1
+                    newSelf.pad(((0,0), (0,padX)), mode='constant')
+                    del padX
+                if (ny1 > ny2):
+                    padY    = ny1 - ny2
+                    newImg.pad(((0,padY),(0,0)), mode='constant')
+                    del padY
+                if (ny1 < ny2):
+                    padY    = ny2 - ny1
+                    newSelf.pad(((0,padY),(0,0)), mode='constant')
+                    del padY
+
+            # Use this value to test for pixel saturation
+            satLimit = 16000
+
+            # Define kernal shape for an median filtering needed
+            binX, binY = self.binning
+            medianKernShape = np.int(np.ceil(9.0/binX)), np.int(np.ceil(9.0/binY))
+
+            # Make temporary copies for the "fftconvolve" alignment
+            self1 = newSelf.copy()
+            img1  = newImg.copy()
+
+            # Replace negative values with image median, for now.
+            selfNegPix  = np.nan_to_num(self1.arr) < 0
+            if np.sum(selfNegPix) > 0:
+                badInds  = np.where(selfNegPix)
+                goodInds = np.where(np.logical_not(selfNegPix))
+                self1.arr[badInds] = np.median(np.nan_to_num(self1.arr[goodInds]))
+
+            # Replace NaN values with local median, for now.
+            selfNaNpix  = np.logical_not(np.isfinite(self1.arr))
+            if np.sum(selfNaNpix) > 0:
+                badInds  = np.where(selfNaNpix)
+                goodInds = np.where(np.logical_not(selfNaNpix))
+                self1.arr[badInds] = np.median(self1.arr[goodInds])
+                selfMed = median_filter(self1.arr, size = medianKernShape)
+                self1.arr[badInds] = selfMed[badInds]
+
+            # Replace negative values with image median, for now.
+            imgNegPix = np.nan_to_num(img1.arr) < 0
+            if np.sum(imgNegPix) > 0:
+                badInds  = np.where(imgNegPix)
+                goodInds = np.where(np.logical_not(imgNegPix))
+                img1.arr[badInds] = np.median(np.nan_to_num(img1.arr[goodInds]))
+
+            # Replace NaN values with local median, for now.
+            imgNaNpix  = np.logical_not(np.isfinite(img1.arr))
+            if np.sum(imgNaNpix) > 0:
+                badInds  = np.where(imgNaNpix)
+                goodInds = np.where(np.logical_not(imgNaNpix))
+                img1.arr[badInds] = np.median(img1.arr[goodInds])
+                imgMed = median_filter(img1.arr, size = medianKernShape)
+                img1.arr[badInds] = imgMed[badInds]
+
+            # Do an array flipped convolution, which is a correlation.
+            corr = signal.fftconvolve(img1.arr, self1.arr[::-1, ::-1], mode='same')
+
+            # Do a little post-processing to block out bad points in corr image
+            # First filter with the median
+            medCorr = median_filter(corr, size = medianKernShape)
+
+            # Compute sigma_clipped_stats of the correlation image
+            mean, median, stddev = sigma_clipped_stats(corr)
+
+            # Then check for significant deviations from median.
+            deviations = (np.abs(corr - medCorr) > 2.0*stddev)
+
+            # Count the number of masked neighbors for each pixel
+            neighborCount = np.zeros_like(corr, dtype=int)
+            for dx1 in range(-1,2,1):
+                for dy1 in range(-1,2,1):
+                    neighborCount += np.roll(np.roll(deviations, dy1, axis=0),
+                                             dx1, axis=1).astype(int)
+
+            # Find isolated deviant pixels (these are no good!)
+            deviations = np.logical_and(deviations, neighborCount <= 4)
+
+            if np.sum(deviations > 0):
+                # Inpaint those deviations
+                tmp1 = image_tools.inpaint_nans(corr, mask = deviations)
+                corr = tmp1
+
+            # Check for the maximum of the cross-correlation function
+            peak1  = np.unravel_index(corr.argmax(), corr.shape)
+            dy, dx = np.array(peak1) - np.array(corr.shape)//2
+
+            # If integer pixel shifts are ok, then just use the peak of the
+            # correlation image to determine the total image offsets
+            if subPixel:
+                # Otherwise cut out subarrays around the brightest 25 stars, and
+                # figure out what fractional shift value produces the best
+                # correlation image for those subarrays.
+
+                # Start by inpainting any local deviations (e.g. saturation)
+                # First filter with the median
+                medSelf1 = median_filter(self1.arr, size = medianKernShape)
+                # Compute sigma_clipped_stats of the self image
+                mean, median, stddev = sigma_clipped_stats(self1.arr)
+                # Then check for significant deviations from median.
+                deviations = (np.abs(self1.arr - medSelf1) > 2.0*stddev)
+                # Count the number of masked neighbors for each pixel
+                neighborCount = np.zeros(self1.arr.shape, dtype=int)
+                for dx1 in range(-1,2,1):
+                    for dy1 in range(-1,2,1):
+                        neighborCount += np.roll(np.roll(deviations, dy1, axis=0),
+                                                 dx1, axis=1).astype(int)
+
+                # Apply the initial (integer) shifts to the (non-nan) images
+                img1.shift(-dx, -dy)
+
+                # Combine images to find the brightest 25 (or 16, or 9 stars in the image)
+                comboImg = self1 + img1
+
+                # Find nans and low numbers
+                badPix = np.logical_or(
+                    comboImg.arr < -1e5,
+                    np.logical_not(np.isfinite(comboImg.arr)))
+                if np.sum(badPix) > 0:
+                    badInds = np.where(badPix)
+                    comboImg.arr[badInds] = 0
+
+                # Get the image statistics
+                mean, median, std = sigma_clipped_stats(
+                    comboImg.arr, sigma=3.0, iters=5)
+
+                # Find the "stars" in the images
+                sources = daofind(comboImg.arr - median,
+                    fwhm=3.0, threshold=5.*std)
+
+                # Sort the sources lists by brightness
+                sortInds = np.argsort(sources['mag'])
+                sources  = sources[sortInds]
+
+                # Only keep high quality detected sources.
+                # (1) - delete edge stars
+                # Remove detections within 40 pixels of the image edge
+                # (This guarantees that the star-cutout process will succeed)
+                ny, nx   = comboImg.arr.shape
+                goodX    = np.logical_and(sources['xcentroid'] > 40,
+                                         sources['xcentroid'] < (nx - 40))
+                goodY    = np.logical_and(sources['ycentroid'] > 40,
+                                         sources['ycentroid'] < (ny - 40))
+                goodInds = np.where(np.logical_and(goodX, goodY))
+                sources  = sources[goodInds]
+
+                # (2) - delete "crowded" stars and non-gaussian stars
+                # Build a gaussian model for fitting stars
+                gauss_init = models.Gaussian2D(
+                    amplitude=1000.0,
+                    x_mean=10.0,
+                    y_mean=10.0,
+                    x_stddev=3.0,
+                    y_stddev=3.0,
+                    theta=0.0)
+                bkg_init   = models.Polynomial2D(1)
+                patch_init = gauss_init + bkg_init
+                fitter     = fitting.LevMarLSQFitter()
+
+                # Remove any detections with neighbors within sqrt(2)*10 pixels,
+                # or if a guassian model cannot be fit to that star.
+                starCutout    = 20
+                nearestDist   = np.sqrt(2)*0.5*starCutout
+                yy, xx        = np.mgrid[0:starCutout,0:starCutout]
+                patchList     = []
+                keepStarList  = []
+                keepStarCount = 0
+                for source in sources:
+                    # If we already have the maximum number of acceptable stars,
+                    # then simply BREAK out of the Loop.
+                    if keepStarCount >= 25: break
+
+                    # Save THIS star position
+                    xStar, yStar = source['xcentroid'], source['ycentroid']
+
+                    # Compute the distances to the other stars
+                    dists = np.sqrt((sources['xcentroid'].data - xStar)**2 +
+                                    (sources['ycentroid'].data - yStar)**2)
+
+                    # Test for stars *CLOSER* than star patch and *FARTHER* than 0 pixels
+                    nearBool = np.logical_and(dists > 0, dists < nearestDist)
+
+                    # Check if the nearest star is within this star's "patch"
+                    numNearStars = np.sum(nearBool)
+                    crowdBool = numNearStars > 1
+
+                    # Do a double check to see if there are any EXTRA sources
+                    # Start by cutting out the patch surrounding this star
+                    # Establish the cutout bondaries
+                    btCut = np.int(np.round(yStar - np.floor(0.5*starCutout)))
+                    tpCut = np.int(np.round(btCut + starCutout))
+                    lfCut = np.int(np.round(xStar - np.floor(0.5*starCutout)))
+                    rtCut = np.int(np.round(lfCut + starCutout))
+                    patch_data = np.nan_to_num(comboImg.arr[btCut:tpCut,lfCut:rtCut])
+
+                    srcTest = daofind(patch_data - patch_data.min(),
+                        fwhm=3.0, threshold=3*std)
+
+                    # Count the length of the source table found
+                    crowdBool = np.logical_or(crowdBool, len(srcTest) > 1)
+
+                    # If there is a nearby star, then mark for deletion
+                    if crowdBool == True:
+                        keepStarList.append(False)
+                        continue
+
+                    # Next, check if any part of this image is saturated...
+                    satBool = patch_data.max() > satLimit
+                    if satBool == True:
+                        keepStarList.append(False)
+                        continue
+
+                    # Next, try to fit a gaussian to this image.
+                    # By this point, we should be dealing with an *isolated*,
+                    # *non-sturated* star, so a guassian fit *SHOULD* work if
+                    # the source really is a star
+                    with warnings.catch_warnings():
+                        # Ignore model linearity warning from the fitter
+                        warnings.simplefilter('ignore')
+                        patch_model = fitter(patch_init, xx, yy, patch_data)
+
+                    # Now test the "roundness" of the fit and skip the non-round
+                    roundStat = patch_model.x_stddev_0/patch_model.y_stddev_0
+                    if roundStat < 1.0: roundStat = 1.0/roundStat
+                    if (roundStat > 1.5) or roundStat < 0:
+                        keepStarList.append(False)
+                        continue
+
+                    # Finally, test if the star position is where expected.
+                    fitDist = np.sqrt((patch_model.x_mean_0 - 0.5*starCutout)**2 +
+                                      (patch_model.y_mean_0 - 0.5*starCutout)**2)
+                    if fitDist > 3.0:
+                        keepStarList.append(False)
+                        continue
+
+                    # At this point, if the star has passed all the above tests,
+                    # then it should be stored as a positive "keepStar"
+                    # Grab the patches from the respective images
+                    patch_data1 = img1.arr[btCut:tpCut, lfCut:rtCut]
+                    patch_data2 = self1.arr[btCut:tpCut, lfCut:rtCut]
+
+                    # Fit each image with its own polynomial + gaussian model
+                    with warnings.catch_warnings():
+                        # Ignore model linearity warning from the fitter
+                        warnings.simplefilter('ignore')
+                        patch_model1 = fitter(patch_init, xx, yy, patch_data1)
+                        patch_model2 = fitter(patch_init, xx, yy, patch_data2)
+
+                    # First compute background subtracted data
+                    # Begin by constructing a 2D polynomial model (plane)
+                    bkg_model1 = models.Polynomial2D(1)
+                    bkg_model2 = models.Polynomial2D(1)
+
+                    # Transfer the background portion of the patch_model to the
+                    # polynomial plane model.
+                    bkg_model1.c0_0 = patch_model1.c0_0_1
+                    bkg_model1.c1_0 = patch_model1.c1_0_1
+                    bkg_model1.c0_1 = patch_model1.c0_1_1
+                    bkg_model2.c0_0 = patch_model2.c0_0_1
+                    bkg_model2.c1_0 = patch_model2.c1_0_1
+                    bkg_model2.c0_1 = patch_model2.c0_1_1
+
+                    # Compute the normalized, background subtracted data
+                    patch_data1  = patch_data1 - bkg_model1(xx, yy)
+                    patch_data1 -= patch_data1.min()
+                    patch_data1 /= patch_data1.max()
+                    patch_data2  = patch_data2 - bkg_model2(xx, yy)
+                    patch_data2 -= patch_data2.min()
+                    patch_data2 /= patch_data2.max()
+
+                    # Store that in a list of subarrays
+                    patchList.append((patch_data1, patch_data2))
+
+                    # Finally, increment the number of stars kept, and mark this
+                    # index as a "good" keepStar source.
+                    keepStarCount += 1
+                    keepStarList.append(True)
+
+                # Now cull the source list to only include good stars
+                if keepStarCount >= 9:
+                    keepInds = np.where(keepStarList)
+                    sources  = sources[keepInds]
+                else:
+                    print('There are fewer than 9 stars left. Is something wrong?')
+                    pdb.set_trace()
+
+                # Cull the list to the brightest square number of stars
+                if keepStarCount > 25:
+                    keepStarCount = 25
+                elif keepStarCount > 16:
+                    keepStarCount = 16
+                elif keepStarCount > 9:
+                    keepStarCount = 9
+                else:
+                    print('There are fewer than 9 stars left. Is something wrong?')
+                    pdb.set_trace()
+
+                # Perform the actual data cut
+                sources = sources[0:keepStarCount]
+
+                # Chop out the sections around each star,
+                # and build a "starImage"
+                numZoneSide = np.int(np.round(np.sqrt(keepStarCount)))
+                starImgSide = starCutout*numZoneSide
+                starImg1 = np.zeros((starImgSide, starImgSide))
+                starImg2 = np.zeros((starImgSide, starImgSide))
+                # Loop through each star to be cut out
+                iStar = 0
+                for xZone in range(numZoneSide):
+                    for yZone in range(numZoneSide):
+                        # Establish the pasting boundaries
+                        btPaste = np.int(np.round(starCutout*yZone))
+                        tpPaste = np.int(np.round(starCutout*(yZone + 1)))
+                        lfPaste = np.int(np.round(starCutout*xZone))
+                        rtPaste = np.int(np.round(starCutout*(xZone + 1)))
+
+                        # Past each of the previously selected "patches" into
+                        # their respective "starImg" for cross-correlation
+                        patch1, patch2 = patchList[iStar]
+                        starImg1[btPaste:tpPaste, lfPaste:rtPaste] = patch1
+                        starImg2[btPaste:tpPaste, lfPaste:rtPaste] = patch2
+
+                        # Increment the star counter
+                        iStar += 1
+
+                # Do an array flipped convolution, which is a correlation.
+                corr  = signal.fftconvolve(starImg1, starImg2[::-1, ::-1],
+                    mode='same')
+                corr  = 100*corr/np.max(corr)
+
+                # Check for the maximum of the cross-correlation function
+                peak2 = np.unravel_index(corr.argmax(), corr.shape)
+
+                # Chop out the central peak
+                peakSz = 6
+                btCorr = peak2[0] - peakSz
+                tpCorr = btCorr + 2*peakSz + 1
+                lfCorr = peak2[1] - peakSz
+                rtCorr = lfCorr + 2*peakSz + 1
+                corr1  = corr[btCorr:tpCorr, lfCorr:rtCorr]
+
+                # Get the gradient of the cross-correlation function
+                tmp     = AstroImage()
+                tmp.arr = corr1
+                Gx, Gy  = tmp.gradient()
+
+                # Grab the index of the peak
+                yPeak, xPeak = np.unravel_index(corr1.argmax(), corr1.shape)
+
+                # Chop out the central zone and grab the minimum of the gradient
+                cenSz = 3
+                bot   = yPeak - cenSz//2
+                top   = bot + cenSz
+                lf    = xPeak - cenSz//2
+                rt    = lf + cenSz
+
+                # Grab the region near the minima
+                yy, xx   = np.mgrid[bot:top, lf:rt]
+                Gx_plane = Gx[bot:top, lf:rt]
+                Gy_plane = Gy[bot:top, lf:rt]
+
+                # Fit planes to the x and y gradients...Gx
+                px_init = models.Polynomial2D(degree=1)
+                py_init = models.Polynomial2D(degree=1)
+                fit_p   = fitting.LinearLSQFitter()
+                px      = fit_p(px_init, xx, yy, Gx_plane)
+                py      = fit_p(py_init, xx, yy, Gy_plane)
+
+                # Solve these equations using NUMPY
+                # 0 = px.c0_0 + px.c1_0*xx_plane + px.c0_1*yy_plane
+                # 0 = py.c0_0 + py.c1_0*xx_plane + py.c0_1*yy_plane
+                #
+                # This can be reduced to Ax = b, where
+                #
+                A = np.matrix([[px.c1_0.value, px.c0_1.value],
+                               [py.c1_0.value, py.c0_1.value]])
+                b = np.matrix([[-px.c0_0.value],
+                               [-py.c0_0.value]])
+
+                # Now we can use the build in numpy linear algebra solver
+                x_soln = np.linalg.solve(A, b)
+
+                # Finally convert back into an absolute image offset
+                dx1 = lfCorr + (x_soln.item(0) - (numZoneSide*starCutout)//2)
+                dy1 = btCorr + (x_soln.item(1) - (numZoneSide*starCutout)//2)
+
+                # Do a final check to see if these values are logical.
+                # Sub-pixel perterbations greater than 2-pixels are rejected.
+                if (dx1 > 2) or (dy1 > 2):
+                    print('Sub-pixel values seem illogical')
+                    pdb.set_trace()
+
+                # Accumulate the fractional shift on top of the integer shift
+                # computed earlier
+                dx += dx1
+                dy += dy1
+                pdb.set_trace()
+
+        # At this point all image offsets (including possible sub-pixel
+        # corrections) have been computed and will be returned as a tuple
+        return (dx, dy)
+
+    def align(self, img, subPixel=False, mode='wcs', offsets=None):
         """A method to align the self image with an other image
         using the astrometry from each header to shift an INTEGER
         number of pixels.
 
         parameters:
-        img             -- the image with which self will be aligned
-        fractionalShift -- if True, then images are shifted
-                           to be aligned with sub-pixel precision
-        mode            -- ['wcs' | 'cross_correlate']
-                           defines the method used to align the two images
+        img      -- the image with which self will be aligned
+        subPixel -- if True, then images are shifted to be aligned with
+                    sub-pixel precision
+        mode     -- ['wcs' | 'cross_correlate']
+                    defines the method used to align the two images
         """
-        #**********************************************************************
-        # It is unclear if this routine can handle images of different size.
-        # It definitely assumes an identical plate scale...
-        # Perhaps I needto be adjusting for each of these???
-        #**********************************************************************
+        # Check if a list of offsets was supplied
+        if offsets is None:
+            # If no offsets were supplid, then retrieve them
+            offsets = self.get_img_offsets(img, subPixel=subPixel, mode=mode)
+        elif hasattr(offsets, '__iter__') and len(offsets) == 2:
+            # This is just a check to make sure that the offsets are the
+            # appropriate type and size. The actual alignment occurs after the
+            # typechecking.
+            pass
+        else:
+            raise ValueError('offsets keyword must be an iterable, 2 element offset')
 
         # Align self image with img image
         newSelf = self.copy()
@@ -1664,341 +2434,59 @@ class AstroImage(object):
 
         # newImage and newSelf should the same shape and size now...
         # let's double check that's true
-        if newImg.arr.shape != newSelf.arr.shape: pdb.set_trace()
+        if newImg.arr.shape != newSelf.arr.shape:
+            raise IndexError('AstroImage should be padded to the same shape')
 
-        if mode == 'wcs':
-            # Grab self image WCS and pixel center
-            wcs1   = WCS(self.header)
-            wcs2   = WCS(img.header)
-            x1     = np.mean([wcs1.wcs.crpix[0], wcs2.wcs.crpix[0]])
-            y1     = np.mean([wcs1.wcs.crpix[1], wcs2.wcs.crpix[1]])
+        # Unpack the offsets into their (dx, dy) vector format
+        dx, dy = offsets
 
-            # Convert pixels to sky coordinates
-            RA1, Dec1 = wcs1.all_pix2world(x1, y1, 0)
+        # Compute number of padding pixels required for each side of the image to
+        # accomodate this displacement vector (dx, dy)
+        padX = np.int(np.ceil(np.abs(dx)/2))
+        padY = np.int(np.ceil(np.abs(dy)/2))
 
-            # Grab the WCS of the alignment image and convert back to pixels
-            x2, y2 = wcs2.all_world2pix(RA1, Dec1, 0)
-            x2, y2 = float(x2), float(y2)
+        # Construct the before-after padding combinations
+        selfPadX = (padX, padX)
+        selfPadY = (padY, padY)
 
-            # Compute the image possition offset vector
-            dx = x2 - x1
-            dy = y2 - y1
+        # Reverse the padding ammounts to be applied to the secondary image
+        imgPadX = selfPadX[::-1]
+        imgPadY = selfPadY[::-1]
 
-            if fractionalShift:
-                # If a fractional shift is requested, then simply store these
-                # values for later use
-                pass
-            else:
-                # Otherwise round shifts to nearest integer
-                dx = np.int(np.round(dx))
-                dy = np.int(np.round(dy))
-
-        elif mode == 'cross_correlate':
-            """
-            n. b. This method appears to produce results accurate to better
-            than 0.1 pixel as determined by simply copying an image, shifting
-            it an arbitrary amount, and attempting to recover that shift.
-            """
-            # Do an array flipped convolution, which is a correlation.
-            corr = signal.fftconvolve(newImg.arr, newSelf.arr[::-1, ::-1], mode='same')
-
-            # Do a little post-processing to block out bad points in corr image
-            # First filter with the median
-            binX, binY = self.binning
-            medianKernShape = np.int(np.ceil(9.0/binX)), np.int(np.ceil(9.0/binY))
-            medCorr = median_filter(corr, size = medianKernShape)
-
-            # Compute sigma_clipped_stats of the correlation image
-            mean, median, stddev = sigma_clipped_stats(corr)
-
-            # Then check for significant deviations from median.
-            deviations = (np.abs(corr - medCorr) > 2.0*stddev)
-
-            # Count the number of masked neighbors for each pixel
-            neighborCount = np.zeros_like(corr, dtype=int)
-            for dx in range(-1,2,1):
-                for dy in range(-1,2,1):
-                    neighborCount += np.roll(np.roll(deviations, dy, axis=0),
-                                             dx, axis=1).astype(int)
-
-            # Find isolated deviant pixels (these are no good!)
-            deviations = np.logical_and(deviations, neighborCount <= 4)
-
-            if np.sum(deviations > 0):
-                # Inpaint those deviations
-                tmp  = AstroImage()
-                tmp.arr = corr
-                tmp.binning = (1,1)
-                tmp1 = image_tools.inpaint_nans(tmp.arr, mask = deviations)
-                corr = tmp1
-
-            # Check for the maximum of the cross-correlation function
-            peak1  = np.unravel_index(corr.argmax(), corr.shape)
-            dy, dx = np.array(peak1) - np.array(corr.shape)//2
-
-            # If integer pixel shifts are ok, then just use the peak of the
-            # correlation image to determine the total image offsets
-            if fractionalShift:
-                # Otherwise cut out subarrays around the brightest 25 stars, and
-                # figure out what fractional shift value produces the best
-                # correlation image for those subarrays.
-
-                # Apply the initial (integer) shifts to the images
-                img1 = newImg.copy()
-                img1.shift(dx, dy)
-
-                # Combine images to find the brightest 25 (or 16, or 9 stars in the image)
-                comboImg = newSelf + img1
-
-                # Get the image statistics
-                mean, median, std = sigma_clipped_stats(comboImg.arr, sigma=3.0, iters=5)
-
-                # Find the stars in the images
-                sources = daofind(comboImg.arr - median, fwhm=3.0, threshold=5.*std)
-
-                # Sort the sources lists by brightness
-                sortInds = np.argsort(sources['mag'])
-                sources  = sources[sortInds]
-
-                # Remove detections within 20 pixels of the image edge
-                # (This guarantees that the star-cutout process will succeed)
-                ny, nx   = comboImg.arr.shape
-                goodX    = np.logical_and(sources['xcentroid'] > 20,
-                                         sources['xcentroid'] < (nx - 20))
-                goodY    = np.logical_and(sources['ycentroid'] > 20,
-                                         sources['ycentroid'] < (ny - 20))
-                goodInds = np.where(np.logical_and(goodX, goodY))
-                sources  = sources[goodInds]
-
-                # Cull the saturated stars from the list
-                numStars = len(sources)
-                yy, xx   = np.mgrid[0:ny,0:nx]
-                badStars = []
-
-                for iStar in range(numStars):
-                    # Grab pixels less than 10 from the star
-                    xStar, yStar = sources[iStar]['xcentroid'], sources[iStar]['ycentroid']
-                    starDist  = np.sqrt((xx - xStar)**2 + (yy - yStar)**2)
-                    starPatch = comboImg.arr[np.where(starDist < 10)]
-
-                    # Test if there are bad pixels within 10 from the star
-                    # numBadPix = np.sum(np.logical_or(starPatch > 12e3, starPatch < -100))
-                    numBadPix = np.sum(starPatch < -100)
-
-                    # Append the test result to the "badStars" list
-                    badStars.append(numBadPix > 0)
-
-                sources = sources[np.where(np.logical_not(badStars))]
-
-                # Cull the list to the brightest few stars
-                numStars = len(sources)
-                if numStars > 25:
-                    numStars = 25
-                elif numStars > 16:
-                    numStars = 16
-                elif numStars > 9:
-                    numStars = 9
-                else:
-                    print('There are not very many stars. Is something wrong?')
-                    pdb.set_trace()
-
-                sources = sources[0:numStars]
-
-                # Chop out the sections around each star,
-                # and build a "starImage"
-                starCutout  = 20
-                numZoneSide = np.int(np.round(np.sqrt(numStars)))
-                starImgSide = starCutout*numZoneSide
-                starImg1 = np.zeros((starImgSide, starImgSide))
-                starImg2 = np.zeros((starImgSide, starImgSide))
-                # Loop through each star to be cut out
-                iStar = 0
-                for xZone in range(numZoneSide):
-                    for yZone in range(numZoneSide):
-                        # Grab the star positions
-                        xStar = np.round(sources['xcentroid'][iStar])
-                        yStar = np.round(sources['ycentroid'][iStar])
-
-                        # Establish the cutout bondaries
-                        btCut = np.int(np.round(yStar - np.floor(0.5*starCutout)))
-                        tpCut = np.int(np.round(btCut + starCutout))
-                        lfCut = np.int(np.round(xStar - np.floor(0.5*starCutout)))
-                        rtCut = np.int(np.round(lfCut + starCutout))
-
-                        # Establish the pasting boundaries
-                        btPaste = np.int(np.round(starCutout*yZone))
-                        tpPaste = np.int(np.round(starCutout*(yZone + 1)))
-                        lfPaste = np.int(np.round(starCutout*xZone))
-                        rtPaste = np.int(np.round(starCutout*(xZone + 1)))
-
-                        # Chop out the star and place it in the starImg
-                        #    (sqrt-scale cutouts (~SNR per pixel) to emphasize alignment
-                        #    of ALL stars not just bright stars).
-                        # Apply accurate flooring of values at 0 (rather than simply using np.abs)
-                        starImg1[btPaste:tpPaste, lfPaste:rtPaste] = np.sqrt(np.abs(img1.arr[btCut:tpCut, lfCut:rtCut]))
-                        starImg2[btPaste:tpPaste, lfPaste:rtPaste] = np.sqrt(np.abs(newSelf.arr[btCut:tpCut, lfCut:rtCut]))
-
-                        # Increment the star counter
-                        iStar += 1
-
-                # Do an array flipped convolution, which is a correlation.
-                corr  = signal.fftconvolve(starImg1, starImg2[::-1, ::-1], mode='same')
-                corr  = 100*corr/np.max(corr)
-
-                # Check for the maximum of the cross-correlation function
-                peak2 = np.unravel_index(corr.argmax(), corr.shape)
-
-                # Chop out the central peak
-                peakSz = 6
-                btCorr = peak2[0] - peakSz
-                tpCorr = btCorr + 2*peakSz + 1
-                lfCorr = peak2[1] - peakSz
-                rtCorr = lfCorr + 2*peakSz + 1
-                corr1  = corr[btCorr:tpCorr, lfCorr:rtCorr]
-
-                # Get the gradient of the cross-correlation function
-                tmp     = AstroImage()
-                tmp.arr = corr1
-                Gx, Gy  = tmp.gradient()
-                grad    = np.sqrt(Gx**2 + Gy**2)
-
-                # Fill in edges to remove artifacts
-                gradMax      = np.max(grad)
-                grad[0:3, :] = gradMax
-                grad[:, 0:3] = gradMax
-                grad[grad.shape[0]-3:grad.shape[0], :] = gradMax
-                grad[:, grad.shape[1]-3:grad.shape[1]] = gradMax
-
-                # Grab the index of the minimum
-                yMin, xMin = np.unravel_index(grad.argmin(), grad.shape)
-
-                # Chop out the central zone and grab the minimum of the gradient
-                cenSz = 3
-                bot   = yMin - cenSz//2
-                top   = bot + cenSz
-                lf    = xMin - cenSz//2
-                rt    = lf + cenSz
-
-                # Grab the region near the minima
-                yy, xx   = np.mgrid[bot:top, lf:rt]
-                Gx_plane = Gx[bot:top, lf:rt]
-                Gy_plane = Gy[bot:top, lf:rt]
-
-                # Fit planes to the x and y gradients...Gx
-                px_init = models.Polynomial2D(degree=1)
-                py_init = models.Polynomial2D(degree=1)
-                #fit_p   = fitting.LevMarLSQFitter()
-                fit_p   = fitting.LinearLSQFitter()
-                px      = fit_p(px_init, xx, yy, Gx_plane)
-                py      = fit_p(py_init, xx, yy, Gy_plane)
-
-                # Solve these equations using NUMPY
-                # 0 = px.c0_0 + px.c1_0*xx_plane + px.c0_1*yy_plane
-                # 0 = py.c0_0 + py.c1_0*xx_plane + py.c0_1*yy_plane
-                #
-                # This can be reduced to Ax = b, where
-                #
-                A = np.matrix([[px.c1_0.value, px.c0_1.value],
-                               [py.c1_0.value, py.c0_1.value]])
-                b = np.matrix([[-px.c0_0.value],
-                               [-py.c0_0.value]])
-
-                # Now we can use the build in numpy linear algebra solver
-                x_soln = np.linalg.solve(A, b)
-
-                # Finally convert back into an absolute image offset
-                dx1 = lfCorr + (x_soln.item(0) - (numZoneSide*starCutout)//2)
-                dy1 = btCorr + (x_soln.item(1) - (numZoneSide*starCutout)//2)
-
-                # Accumulate the fractional shift on top of the integer shift
-                # computed earlier
-                dx += dx1
-                dy += dy1
+        # Compute the shifting amount
+        if subPixel:
+            selfShiftX = +0.5*dx
+            imgShiftX  = selfShiftX - dx
+            selfShiftY = +0.5*dy
+            imgShiftY  = selfShiftY - dy
         else:
-            print('mode rot recognized')
-            pdb.set_trace()
+            selfShiftX = +np.int(np.round(0.5*dx))
+            imgShiftX  = -np.int(np.round(dx - selfShiftX))
+            selfShiftY = +np.int(np.round(0.5*dy))
+            imgShiftY  = -np.int(np.round(dy - selfShiftY))
 
-        # The image offsets have been computed, so return the requested data
-        if offsets:
-            # If only the image offsets were requested, then simply return these
-            return (dx, dy)
-        else:
-            # Otherwise apply the computed image shifts to the input images and
-            # return a tupple of aligned images.
+        # Define the padding widths
+        # (recall axis ordering is 0=z, 1=y, 2=x, etc...)
+        selfPadWidth = np.array((selfPadY, selfPadX), dtype=np.int)
+        imgPadWidth  = np.array((imgPadY,  imgPadX), dtype=np.int)
 
-            # Compute the padding amounts. This is a non-trivial process due to
-            # the way that odd vs. even is determined in python 3.x.
-            if (np.int(np.round(dx)) % 2) == 1:
-                padX = np.int(np.round(np.abs(dx))/2 + 1)
-            else:
-                padX = np.int(np.round(np.abs(dx))/2)
+        # Compute the padding to be added and pad the arr and sigma arrays
+        newSelf.pad(selfPadWidth, mode='constant')
+        newImg.pad(imgPadWidth, mode='constant')
 
-            if (np.int(np.round(dy)) % 2) == 1:
-                padY = np.int(np.round(np.abs(dy))/2 + 1)
-            else:
-                padY = np.int(np.round(np.abs(dy))/2)
+        # Update header info
+        # New header may already be correct, but no harm in double checking.
+        newSelf.header['NAXIS1'] = newSelf.arr.shape[1]
+        newSelf.header['NAXIS2'] = newSelf.arr.shape[0]
+        newImg.header['NAXIS1']  = newImg.arr.shape[1]
+        newImg.header['NAXIS2']  = newImg.arr.shape[0]
 
-            # Construct the before-after padding combinations
-            if dx > 0:
-                selfDX = (np.int(np.round(np.abs(dx)-padX)), padX)
-            else:
-                selfDX = (padX, np.int(np.round(np.abs(dx)-padX)))
+        # Shift the images
+        newSelf.shift(selfShiftX, selfShiftY)
+        newImg.shift(imgShiftX, imgShiftY)
 
-            if dy > 0:
-                selfDY = (np.int(np.round(np.abs(dy)-padY)), padY)
-            else:
-                selfDY = (padY, np.int(np.round(np.abs(dy)-padY)))
-
-            imgDX = selfDX[::-1]
-            imgDY = selfDY[::-1]
-
-            # Compute the shifting amount
-            if fractionalShift:
-                selfShiftX = +0.5*dx
-                imgShiftX  = selfShiftX - dx
-                selfShiftY = +0.5*dy
-                imgShiftY  = selfShiftY - dy
-            else:
-                selfShiftX = +np.int(np.round(0.5*dx))
-                imgShiftX  = -np.int(np.round(dx - selfShiftX))
-                selfShiftY = +np.int(np.round(0.5*dy))
-                imgShiftY  = -np.int(np.round(dy - selfShiftY))
-
-            # Define the padding widths
-            # (recall axis ordering is 0=z, 1=y, 2=x, etc...)
-            selfPadWidth = np.array((selfDY, selfDX), dtype=np.int)
-            imgPadWidth  = np.array((imgDY,  imgDX), dtype=np.int)
-
-            # Compute the padding to be added and pad the arr and sigma arrays
-            newSelf.pad(selfPadWidth, mode='constant')
-            newImg.pad(imgPadWidth, mode='constant')
-
-            # Account for un-balanced padding with an initial shift left or down
-            initialXshift = selfPadWidth[1,0] - imgPadWidth[1,0]
-            if initialXshift > 0:
-                newSelf.shift(-initialXshift, 0)
-            elif initialXshift < 0:
-                newImg.shift(-initialXshift, 0)
-
-            initialYshift = selfPadWidth[0,0] - imgPadWidth[0,0]
-            if initialYshift > 0:
-                newSelf.shift(0, -initialYshift)
-            elif initialYshift < 0:
-                newImg.shift(0, -initialYshift)
-
-            # Update header info
-            # New header may already be correct, but no harm in double checking.
-            newSelf.header['NAXIS1'] = newSelf.arr.shape[1]
-            newSelf.header['NAXIS2'] = newSelf.arr.shape[0]
-            newImg.header['NAXIS1']  = newImg.arr.shape[1]
-            newImg.header['NAXIS2']  = newImg.arr.shape[0]
-
-            # Shift the images
-            newSelf.shift(selfShiftX, selfShiftY)
-            newImg.shift(imgShiftX, imgShiftY)
-
-            # Retun the aligned Images (not the same size as the input images)
-            return [newSelf, newImg]
+        # Retun the aligned Images (not the same size as the input images)
+        return (newSelf, newImg)
 
     def fix_astrometry(self):
         """This ensures that the CDELT values and PC matrix are properly set.
@@ -2121,6 +2609,9 @@ class AstroImage(object):
                  allows the user to specify if if the image stretch should be
                  linear or log space
         """
+        # First, determine if the current state is "interactive"
+        isInteractive = mpl.is_interactive()
+
         # Set the scaling for the image
         if scale == 'linear':
             # Compute a display range in terms of the image noise level
@@ -2132,14 +2623,12 @@ class AstroImage(object):
             showArr    = self.arr
             normalizer = mcol.Normalize(vmin = vmin, vmax = vmax)
         elif scale == 'log':
+            # Compute a display range in terms of the image noise level
+            mean, median, stddev = sigma_clipped_stats(self.arr.flatten())
             if vmin == None:
-                vmin = -6
-            else:
-                vmin = np.log10(vmin)
-            if vmax == None:
-                vmax = np.max(showArr)
-            else:
-                vmax = np.log10(vmax)
+                testMin = median - 0.8*stddev
+                vmin = testMin if testMin > 0 else 0.01
+            if vmax == None: vmax = median + 80*stddev
 
             # Clip the array (so there are no logs of negative values)
             showArr    = np.clip(self.arr, vmin, vmax)
@@ -2207,10 +2696,30 @@ class AstroImage(object):
         if not noShow:
             plt.ion()
             fig.show()
-            plt.ioff()
+
+            # Reset the original "interactive" state
+            if not isInteractive:
+                plt.ioff()
 
         # Return the graphics objects to the user
         return (fig, axes, axIm)
+
+    def oplot_sources(self, satLimit=16000, crowdThresh=0.0,
+        s=100, edgecolor='red', facecolor='none', **kwargs):
+        """A method to overplot sources using the pyplot.scatter() method and its
+        associated keywords
+        """
+        # Grab the sources using the get_sources() method
+        xs, ys = self.get_sources(satLimit=satLimit, crowdThresh=crowdThresh)
+
+        # The following line makes it so that the zoom level no longer changes,
+        # otherwise Matplotlib has a tendency to zoom out when adding overlays.
+        ax = plt.gca()
+        ax.set_autoscale_on(False)
+        ax.scatter(xs, ys, s=s, edgecolor=edgecolor, facecolor=facecolor, **kwargs)
+
+        # Force a redraw of the canvas
+        plt.draw()
 
 class Bias(AstroImage):
     """A subclass of the "Image" class: stores bias images and provides some

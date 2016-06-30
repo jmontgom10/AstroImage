@@ -22,18 +22,19 @@ import AstroImage
 # Import pdb for debugging
 import pdb
 
-def align_images(imgList, padding=0, mode='wcs', subPixel=False, offsets=False):
-    """A method to align the a whole stack of images using the astrometry
-    from each header to shift an INTEGER number of pixels.
+def get_image_offsets(imgList, subPixel=False, mode='wcs'):
+    """A function to compute the offsets between images using either the WCS
+    values contained in each image header or using cross-correlation techniques
+    with an emphasis on star alignment for sub-pixel accuracy.
 
     parameters:
-    imgList -- the list of image to be aligned.
-    padding -- the value to use for padding the edges of the aligned
-               images. Common values are 0 and NaN.
-    mode    -- ['wcs' | 'cross_correlate'] the method to be used for
-               aligning the images in imgList. 'wcs' uses the astrometry
-               in the header while 'cross_correlation' selects a reference
-               image and computes image offsets using cross-correlation.
+    imgList  -- the list of images to be aligned.
+    subPixel -- this boolean flag determines whether to round image offsets to
+                the nearest integer value.
+    mode     -- ['wcs' | 'cross_correlate'] the method to be used for
+                aligning the images in imgList. 'wcs' uses the astrometry
+                in the header while 'cross_correlate' selects a reference
+                image and computes image offsets using cross-correlation.
     """
     # Catch the case where a list of images was not passed
     if not isinstance(imgList, list):
@@ -45,13 +46,14 @@ def align_images(imgList, padding=0, mode='wcs', subPixel=False, offsets=False):
         return imgList[0]
 
     # Catch the case where imgList has only two images
-    if len(imgList) <= 2:
-        return imgList[0].align(imgList[1], mode=mode)
+    if len(imgList) == 2:
+        return imgList[0].get_img_offsets(imgList[1],
+            subPixel=subPixel, mode=mode)
 
     #**********************************************************************
     # Get the offsets using whatever mode was selected
     #**********************************************************************
-    if mode == 'wcs':
+    if mode.lower() == 'wcs':
         # Compute the relative position of each of the images in the stack
         wcs1      = WCS(imgList[0].header)
         x1, y1    = imgList[0].arr.shape[1]//2, imgList[0].arr.shape[0]//2
@@ -74,32 +76,49 @@ def align_images(imgList, padding=0, mode='wcs', subPixel=False, offsets=False):
             imgXpos.append(float(x2))
             imgYpos.append(float(y2))
 
-    elif mode == 'cross_correlate':
+    elif mode.lower() == 'cross_correlate':
+        # Begin by selecting a reference image.
+        # This should be the image with the BROADEST PSF. To determine this,
+        # Let's grab the PSFparams of all the images and store the geometric
+        # mean of sx, sy the best-fit Gaussian eigen-values.
+        PSFsize = []
+        for img in imgList:
+            PSFparams, _ = img.get_psf()
+            PSFsize.append(np.sqrt(PSFparams['sx']*PSFparams['sy']))
+
         # Use the first image in the list as the "reference image"
-        refImg = imgList[0]
+        refInd    = np.int((np.where(PSFsize == np.max(PSFsize)))[0])
+        otherInds = (np.where(PSFsize != np.max(PSFsize)))[0]
+        refImg    = imgList[refInd]
 
         # Initalize empty lists for storing offsets and shapes
-        shapeList = [refImg.arr.shape]
-        imgXpos   = [0.0]
-        imgYpos   = [0.0]
+        shapeList = []
+        imgXpos   = []
+        imgYpos   = []
 
         # Loop through the rest of the images.
         # Use cross-correlation to get relative offsets,
         # and accumulate image shapes
-        for img in imgList[1:]:
-            dx, dy = refImg.align(img, mode='cross_correlate', offsets=True)
-            shapeList.append(img.arr.shape)
-            imgXpos.append(-dx)
-            imgYpos.append(-dy)
+        for img in imgList:
+            if img is refImg:
+                # Just append null values for the reference image
+                shapeList.append(refImg.arr.shape)
+                imgXpos.append(0.0)
+                imgYpos.append(0.0)
+            else:
+                # Compute actual image offset between reference and image
+                dx, dy = refImg.get_img_offsets(img,
+                    mode='cross_correlate',
+                    subPixel=subPixel)
+
+                # Append cross_correlation values for non-reference image
+                shapeList.append(img.arr.shape)
+                imgXpos.append(dx)
+                imgYpos.append(dy)
     else:
-        print('mode not recognized')
-        pdb.set_trace()
+        raise ValueError('Mode not recognized')
 
-    # Make sure all the images are the same size
-    shapeList = np.array(shapeList)
-    nyFinal   = np.max(shapeList[:,0])
-    nxFinal   = np.max(shapeList[:,1])
-
+    # Center the image offsets about the median vector
     # Compute the median pointing
     x1 = np.median(imgXpos)
     y1 = np.median(imgYpos)
@@ -119,30 +138,104 @@ def align_images(imgList, padding=0, mode='wcs', subPixel=False, offsets=False):
     # (add an 'epsilon' shift to make sure ALL images get shifted
     # at least a tiny bit... this guarantees the images all get convolved
     # by the pixel shape.)
-    epsilon = 1e-4
-    dx = x1 - np.array(imgXpos) + epsilon
-    dy = y1 - np.array(imgYpos) + epsilon
+    dx = x1 - np.array(imgXpos)
+    dy = y1 - np.array(imgYpos)
 
-    # Check for integer shifts
-    for dx1, dy1 in zip(dx, dy):
-        if dx1.is_integer(): pdb.set_trace()
-        if dy1.is_integer(): pdb.set_trace()
+    # Return the image offsets
+    return (dx, dy)
 
-    # Compute the total image padding necessary to fit the whole stack
-    padLf     = np.int(np.round(np.abs(np.min(dx))))
-    padRt     = np.int(np.round(np.max(dx)))
-    padBot    = np.int(np.round(np.abs(np.min(dy))))
-    padTop    = np.int(np.round(np.max(dy)))
+def align_images(imgList, padding=0, mode='wcs', subPixel=False, offsets=None):
+    """A function to align the a whole stack of images using the astrometry
+    from each header or cross-correlation techniques to align all the images
+    so that image addition, subtraction, etc... works out.
+
+    N.B. (2016-06-29) This function *DOES NOT* math image PSFs.
+    Perhaps this functionality will be implemented in future versions
+
+    parameters:
+    imgList  -- the list of images to be aligned.
+    padding  -- the value to use for padding the edges of the aligned
+                images. Common values are 0 and NaN.
+    mode     -- ['wcs' | 'cross_correlate'] the method to be used for
+                aligning the images in imgList. 'wcs' uses the astrometry
+                in the header while 'cross_correlate' selects a reference
+                image and computes image offsets using cross-correlation.
+    subPixel -- this boolean flag indicates whether or not the images should be
+                shifted to within a sub-pixel accuracy (generally not possible
+                using WCS, but sometimes possible using 'cross_correlate')
+    offsets  -- True (default) returns aligned images.
+                False returns image offsets.
+    """
+    # Catch the case where a list of images was not passed
+    if not isinstance(imgList, list):
+        raise ValueError('imgList variable must be a list of images')
+
+    # Catch the case where imgList has only one image
+    if len(imgList) <= 1:
+        print('Must have more than one image in the list to be aligned')
+        return imgList[0]
+
+    # Catch the case where imgList has only two images
+    if len(imgList) == 2:
+        return imgList[0].align(imgList[1],
+            mode=mode, subPixel=subPixel, offsets=offsets)
+
+    # Check if a list of offsets was supplied and if they make sense
+    if offsets is None:
+        # If no offsets were supplid, then retrieve them using above function
+        offsets = get_image_offsets(imgList,
+            mode=mode, subPixel=subPixel)
+    # Check if there are both x and y offsets provided
+    elif hasattr(offsets, '__iter__') and len(offsets) == 2:
+        # Check if they make sense...
+        if (len(offsets[0]) == len(offsets[1])
+            and len(offsets[0]) == len(imgList)):
+            pass
+        else:
+            raise ValueError('there must be exactly one offset pair per image')
+    else:
+        raise ValueError('offsets keyword must be an iterable, 2 element offset')
+
+    # Unpack the computed (or provided) image offsets
+    # imgXpos, imgYpos = offsets
+    dx, dy = offsets
+
+    if subPixel == True:
+        # Make sure that ALL images get shifted at least a small amount.
+        # Shifting by a non-integer amount convolves the image with the pixel
+        # shape, so we need to make sure there are no integer value shifts
+        epsilon = 1e-4
+        dx += epsilon
+        dy += epsilon
+
+        # Check for perfect integer shifts
+        for dx1, dy1 in zip(dx, dy):
+            if dx1.is_integer(): pdb.set_trace()
+            if dy1.is_integer(): pdb.set_trace()
+
+    # Grab a list of image shapes and compute maximum input image dimensions
+    shapeList = np.array([img.arr.shape for img in imgList])
+    nyFinal   = np.max(shapeList[:,0])
+    nxFinal   = np.max(shapeList[:,1])
+
+    # Compute the total image padding necessary to fit the whole stack, and
+    # check if these values are at all reasonable
+    padLf     = np.int(np.ceil(np.abs(np.min(dx))))
+    padRt     = np.int(np.ceil(np.max(dx)))
+    padBot    = np.int(np.ceil(np.abs(np.min(dy))))
+    padTop    = np.int(np.ceil(np.max(dy)))
     totalPadX = padLf  + padRt
     totalPadY = padBot + padTop
 
-    # Test for sanity
-    if ((totalPadX > np.max(shapeList[:,1])) or
-        (totalPadY > np.max(shapeList[:,0]))):
+    # Test for sanity. If the shift amount is greater than the image size, then
+    # these two images don't actually overlap... this is a "mosaicing" problem,
+    # not an "alignment" problem.
+    if ((totalPadX > nxFinal) or
+        (totalPadY > nyFinal)):
         print('there is a problem with the alignment')
         pdb.set_trace()
 
-    # compute padding
+    # Compute padding
     padX     = (padLf, padRt)
     padY     = (padBot, padTop)
     padWidth = np.array((padY,  padX), dtype=np.int)
@@ -151,29 +244,30 @@ def align_images(imgList, padding=0, mode='wcs', subPixel=False, offsets=False):
     alignedImgList = []
 
     # Loop through each image and pad it accordingly
-    for i in range(len(imgList)):
+    for img, dx1, dy1 in zip(imgList, dx, dy):
         # Make a copy of the image
-        newImg     = imgList[i].copy()
+        newImg = img.copy()
 
-        # Check if this image needs an initial padding to match final size
-        if (nyFinal, nxFinal) != imgList[i].arr.shape:
-            padX       = nxFinal - imgList[i].arr.shape[1]
-            padY       = nyFinal - imgList[i].arr.shape[0]
-            initialPad = ((0, padY), (0, padX))
+        # Check if this image needs an initial padding to match final size, and
+        # apply padding to ensure that all images START with the same shape.
+        if (nyFinal, nxFinal) != img.arr.shape:
+            padX1      = nxFinal - img.arr.shape[1]
+            padY1      = nyFinal - img.arr.shape[0]
+            initialPad = ((0, padY1), (0, padX1))
             newImg.pad(initialPad, mode='constant', constant_values=padding)
 
-        # Apply the more padding to prevent data loss in final shift
+        # Apply the extra padding to prevent data loss in final shift
         newImg.pad(padWidth, mode='constant', constant_values=padding)
 
         # Shift the images to their final positions
         if subPixel:
             # If sub-pixel shifting was requested, then use it
-            shiftX = dx[i]
-            shiftY = dy[i]
+            shiftX = dx1
+            shiftY = dy1
         else:
             # otherwise just take the nearest integer shifting offset
-            shiftX = np.int(np.round(dx[i]))
-            shiftY = np.int(np.round(dy[i]))
+            shiftX = np.int(np.round(dx1))
+            shiftY = np.int(np.round(dy1))
 
         # Actually apply the shift (along with the error-propagation)
         newImg.shift(shiftX, shiftY, padding=padding)
@@ -211,7 +305,7 @@ def align_images(imgList, padding=0, mode='wcs', subPixel=False, offsets=False):
 def combine_images(imgList, output = 'MEAN',
                    bkgClipSigma = 5.0, starClipSigma = 40.0, iters=5,
                    weighted_mean = False,
-                   effective_gain = None, read_noise = None):
+                   mean_bkg = 0.0, effective_gain = None, read_noise = None):
     """Compute the median filtered mean of a stack of images.
     Standard deviation is computed from the variance of the stack of
     pixels.
@@ -230,6 +324,10 @@ def combine_images(imgList, output = 'MEAN',
                       contained in each AstroImage instance to compute a final
                       weighted average image. If marked as True, then each image
                       in the imgList is supposed
+    mean_bkg       -- this is the mean background level that was subtracted from
+                      the images in imgList. This should be ADDED back into the
+                      counts used to estimate pixel uncertainty using
+                      "effective_gain" and "read_noise".
     effective_gain -- the conversion factor from image counts to electrons
                       (units of electrons/count). This number will be used in
                       estimating the Poisson contribution to the uncertainty
@@ -497,16 +595,20 @@ def combine_images(imgList, output = 'MEAN',
         if compute_uncertainty:
             # Find those pixels where no flux seems to be detected
             if output.upper() == 'SUM':
-                rn_mask = (outputImg <= (numImg*read_noise/effective_gain))
-                sigmaImg = np.sqrt(np.abs(outputImg/effective_gain) +
+                poisCounts = outputImg + numImg*mean_bkg
+                rn_mask    = (poisCounts <= (numImg*read_noise/effective_gain))
+                sigmaImg   = np.sqrt(np.abs(poisCounts/effective_gain) +
                     numPoints*(read_noise/effective_gain)**2)
             if output.upper() == 'MEAN':
-                rn_mask = outputImg <= (read_noise/effective_gain)
-                sigmaImg = np.sqrt(np.abs(outputImg/effective_gain) +
-                    (read_noise/effective_gain)**2)
+                poisCounts = outputImg + mean_bkg
+                rn_mask    = poisCounts <= (read_noise/effective_gain)
+                sigmaImg   = np.sqrt(np.abs(poisCounts/effective_gain) +
+                    (read_noise/effective_gain)**2)/np.sqrt(numImg - 1)
 
-            # apply read_noise floor to the dimmest points in the image
-            sigmaImg[rn_mask] = read_noise/effective_gain
+            # Apply read_noise floor to the dimmest points in the image
+            if np.sum(rn_mask) > 0:
+                rn_Inds = np.where(rn_mask)
+                sigmaImg[rn_Inds] = read_noise/effective_gain
 
             # Store the output uncertainty in the sigma attribute
             outImg.sigma = sigmaImg
@@ -757,171 +859,6 @@ def build_starMask(arr, sigmaThresh = 2.0, neighborThresh = 2, kernelSize = 9):
     starMask = np.logical_and(starMask, neighborCount > neighborThresh)
 
     return starMask
-
-# def model_bad_pixels(arr):
-#     '''This function will identify bad pixels replace their values with an
-#     estimate based on the local values. The replacement algorithm first
-#     identifies if the pixel is (1) near an image edge, (2) in a star, or (3)
-#     anywhere else.
-#     '''
-#     if len(arr.shape) > 2:
-#         raise ValueError('arr must be a 2-dimensional array')
-#
-#     # Grab the array shape
-#     ny, nx = arr.shape
-#
-#     # Generate a 2D grid of pixel positions
-#     yy, xx = np.mgrid[0:ny, 0:nx]
-#
-#     # Copy the array for manipulation
-#     outArr = arr.copy()
-#
-#     # Identify bad pixels as those more than 7 sigma below the median value or
-#     # non-finite pixels.
-#     mean, median, stddev = sigma_clipped_stats(outArr.flatten())
-#     badPix = np.logical_or((np.abs(outArr - median)/stddev > 7.0),
-#                            np.logical_not(np.isfinite(outArr)))
-#     if np.sum(badPix) > 0:
-#         # Locate the bad pixels
-#         badY, badX = np.where(badPix)
-#
-#         # Build a goodPix array
-#         goodPix = np.logical_not(badPix)
-#     else:
-#         # No bad pixels found, so simply return array to user
-#         return arr
-#
-#     # Build an initial repair image (from medial filter). The pixel values from
-#     # this image will be used to fill in local bad pixels (if they are not in)
-#     # a star.
-#     arr1 = median_filter(outArr, size=(9,9))
-#
-#     # Loop through the bad pixels
-#     for iy, ix in zip(badY, badX):
-#         # Check for edge pixels
-#         # lfEdge = (ix <= 2)
-#         # rtEdge = (ix >= (nx - 3))
-#         # btEdge = (iy <= 5)
-#         # tpEdge = (iy >= (ny - 6))
-#         lfEdge = (ix <= 12)
-#         rtEdge = (ix >= (nx - 13))
-#         btEdge = (iy <= 15)
-#         tpEdge = (iy >= (ny - 16))
-#         inEdge = lfEdge or rtEdge or btEdge or tpEdge
-#
-#         ################## EDGE PIXELS ##################
-#         # If the pixel is in the edge, then replace with nearby median estimate
-#         if inEdge:
-#             sampleX = ix + 15*int(lfEdge) - 15*int(rtEdge)
-#             sampleY = iy + 15*int(btEdge) - 15*int(tpEdge)
-#             outArr[iy, ix] = arr1[sampleY, sampleX]
-#
-#             # Now skip to the next pixel
-#             continue
-#
-#         ################## STAR PIXELS ##################
-#         # Check for star pixels by checking for a negative slope in flux v. dist
-#         # First compute the distance to each pixel
-#         dist = np.sqrt((xx - ix)**2 + (yy - iy)**2)
-#
-#         # Drop bad pixels.
-#         goodPixInds = np.where(goodPix)
-#         goodDist = dist[goodPixInds]
-#         goodFlux = arr[goodPixInds]
-#
-#         # Now cull the list to the nearest 100 pixels
-#         distSortInds = (goodDist.argsort())[0:100]
-#         dist = goodDist[distSortInds]
-#         flux = goodFlux[distSortInds]
-#
-#         # Fit these distance and flux values with a line
-#         # Set up ODR with the model and data.
-#         lineFunc = lambda B, x: B[0]*x + B[1]
-#         lineModel = Model(lineFunc)
-#         data = Data(dist, flux)
-#
-#         # Perform the ODR fitting
-#         odr     = ODR(data, lineModel, beta0=[0.0, 0.0])
-#         lineFit = odr.run()
-#
-#         # Check the slope and significance of the slope
-#         if (lineFit.beta[0] / lineFit.sd_beta[0]) < -5.0:
-#             ######### WE ARE ON A STAR! #########
-#             # Determine the nearby pixel boundaries to use
-#             if ix < 9:
-#                 lf = 0
-#                 rt = 2*9 + 1
-#             elif ix > (nx - 10):
-#                 rt = nx - 1
-#                 lf = rt - 2*9 - 1
-#             else:
-#                 lf = ix - 9
-#                 rt = lf + 2*9 + 1
-#
-#             if iy < 9:
-#                 bt = 0
-#                 tp = 2*9 + 1
-#             elif iy > (ny - 10):
-#                 tp = ny - 1
-#                 bt = tp - 2*9 - 1
-#             else:
-#                 bt = iy - 9
-#                 tp = bt + 2*9 + 1
-#
-#             # Cut out a subarray and fit a 2d gaussian
-#             subArr = outArr[bt:tp, lf:rt]
-#             subBadPix = badPix[bt:tp, lf:rt]
-#
-#             # Check for nearby bad pixels and replace them with local medians
-#             if np.sum(subBadPix) > 0:
-#                 subMedian = arr1[bt:tp, lf:rt]
-#                 badInds   = np.where(subBadPix)
-#                 subArr[badInds] = subMedian[badInds]
-#
-#             # Initalize a gaussian model to fit to the local data
-#             # Compute the flux centroid
-#             subYY, subXX = yy[bt:tp, lf:rt], xx[bt:tp, lf:rt]
-#             mean_x = np.sum(subArr*subXX)/np.sum(subArr)
-#             mean_y = np.sum(subArr*subYY)/np.sum(subArr)
-#
-#             # Estimate the amplitude as the local maximum
-#             amp = np.max(subArr)
-#
-#             # Initalize the model
-#             gauss_init = models.Gaussian2D(
-#                 amplitude = amp,
-#                 x_mean = mean_x,
-#                 y_mean = mean_y,
-#                 x_stddev = 4.5,
-#                 y_stddev = 4.5,
-#                 theta = 0.0)
-#
-#             # Initalize the least square fitter
-#             gauss_fitter = fitting.LevMarLSQFitter()
-#
-#             # Perform the fit
-#             with warnings.catch_warnings():
-#                 warnings.filterwarnings('error')
-#                 try:
-#                     starFit = gauss_fitter(gauss_init, subXX, subYY, subArr)
-#                     if ix > 100 and iy > 100:
-#                         print(ix, iy)
-#                         pdb.set_trace()
-#
-#                     # Replace the bad pixel with the fitted value
-#                     outArr[iy, ix] = starFit(ix, iy)
-#                     # warnings.warn(Warning())
-#                 except Warning:
-#                     print('raised!')
-#                     # pdb.set_trace()
-#
-#
-#
-#         continue
-#
-#         ################## OTHER PIXELS ##################
-#         # Fill in remaining pixels with local median.
-
 
 def inpaint_nans(arr, mask=None):
     '''This function will take an numpy array object, inpaint the bad (NaN)
