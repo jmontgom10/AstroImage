@@ -2378,7 +2378,6 @@ class AstroImage(object):
                 # computed earlier
                 dx += dx1
                 dy += dy1
-                pdb.set_trace()
 
         # At this point all image offsets (including possible sub-pixel
         # corrections) have been computed and will be returned as a tuple
@@ -2567,7 +2566,7 @@ class AstroImage(object):
             # Define a set of minor tick frequencies associated with each
             # major tick spacing
             minorTicksFreqs = np.array([
-                10, 4, 5, 10, 4, 5, 10, 3, 10, 15, 10, 4, 5, 10, 15, 10, 4, 5])
+                10, 4, 5, 10, 4, 5, 10, 3, 10, 6, 10, 4, 5, 10, 6, 10, 4, 5])
 
             # Figure out which major tick spacing provides the FEWEST ticks
             # but greater than 3
