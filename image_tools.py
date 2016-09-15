@@ -966,6 +966,9 @@ def build_pol_maps(Qimg, Uimg):
     from the input Qimg and Uimg AstroImage instances. If the DEL_PA and
     S_DEL_PA header keywords are set (and match), then the position angle maps
     '''
+    # Check if the U and Q images are the same shape
+    if Qimg.arr.shape != Uimg.arr.shape:
+        raise ValueError('The U and Q images must be the same shape')
 
     # Quickly build the P map
     Pmap  = np.sqrt(Qimg**2 + Uimg**2)

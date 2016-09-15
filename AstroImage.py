@@ -99,10 +99,10 @@ class AstroImage(object):
             self.arr = HDUlist[0].data.astype(dataType, copy = False)
 
             # If binning has been specified, then set it...
-            try:
+            if ('CRDELT1' in self.header) or ('CRDELT2' in self.header):
                 # Check that binning makes sense and store it if it does
                 self.binning = tuple([int(di) for di in self.header['CRDELT*'].values()])
-            except:
+            else:
                 # No binning found, so call this (1x1) binning.
                 self.binning = tuple(np.ones(self.arr.ndim).astype(int))
                 for i, di in enumerate(self.binning):
