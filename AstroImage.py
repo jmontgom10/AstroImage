@@ -317,6 +317,10 @@ class AstroImage(object):
         # I should include the possibility of operating with numpy array
 
         if bothAreImages:
+            # Initalize some variables to check if zeros need to be handled
+            catchSelfZeros  = False
+            catchOtherZeros = False
+
             # Check that image shapes make sense
             shape1     = self.arr.shape
             shape2     = other.arr.shape
@@ -328,6 +332,7 @@ class AstroImage(object):
                 if len(other0Inds[0]) > 0:
                     other0s = other.arr[other0Inds]
                     other.arr[other0Inds] = 1.0
+                    catchOtherZeros = True
 
                 # Do the division
                 output.arr = self.arr / other.arr
@@ -348,6 +353,7 @@ class AstroImage(object):
                 if len(self0Inds) > 0:
                     self0s = self.arr[self0Inds]
                     self.arr[self0Inds] = 1.0
+                    catchSelfZeros = True
 
                 output.sigma = np.abs(output.arr *
                                np.sqrt((self.sigma/self.arr)**2 +
@@ -358,9 +364,9 @@ class AstroImage(object):
                 output.sigma = other.sigma
 
             # Replace zeros
-            if len(self0Inds[0]) > 0:
+            if catchSelfZeros > 0:
                 self.arr[self0Inds] = self0s
-            if len(other0Inds[0]) > 0:
+            if catchOtherZeros > 0:
                 other.arr[other0Inds] = other0s
                 output.arr[other0Inds] = np.nan
 
@@ -1423,9 +1429,15 @@ class AstroImage(object):
     def rebin(self, nx1, ny1, copy=False, total=False):
         """Rebins the image using sigma attribute to produce a weighted average.
         The new image shape must be integer multiples of fractions of the
-        original shape. If 'copy' is True, then the method will return a new
-        copy of the image with its array rebinned. Otherwise, the image will be
-        rebinned in place.
+        original shape. Default behavior is to use inverse variance weighting
+        for the average if a "sigma" attribute is present. Otherwise, simply
+        do straight averaging or summing.
+
+        copy  - [True, False] if set to true, then returns a copy of the image
+                with a rebinned array. Otherwise, the image will be rebinned in
+                place.
+        total - [True, False] if set to true, then returned array is total of
+                the binned pixels rather than the average.
         """
         # Grab the shape of the initial array
         ny, nx = self.arr.shape
@@ -1478,8 +1490,21 @@ class AstroImage(object):
             # Perform the actual rebinning
             # rebinWts1 = wts.reshape(sh).mean(-1).mean(1)
             rebinWts = wts.reshape(sh).sum(-1).sum(1)
-            rebinArr = (tmpArr.reshape(sh).sum(-1).sum(1))/rebinWts
-            rebinSig = np.sqrt(1.0/rebinWts)
+
+            # Catch division by zero
+            zeroInds   = np.where(rebinWts == 0)
+            noZeroInds = np.where(
+                np.logical_and(
+                (rebinWts != 0),
+                np.isfinite(rebinWts)))
+
+            # Computed weighted rebinning
+            rebinArr = (tmpArr.reshape(sh).sum(-1).sum(1))
+            rebinArr[noZeroInds] /= rebinWts[noZeroInds]
+
+            # Compute uncertainyt in weighted rebinning
+            rebinSig = np.zeros(rebinArr.shape) + np.NaN
+            rebinSig[noZeroInds] = np.sqrt(1.0/rebinWts[noZeroInds])
 
             # Check if total flux conservation was requested
             if total:
@@ -1578,7 +1603,7 @@ class AstroImage(object):
             self.binning = (self.binning[0]/xratio,
                             self.binning[1]/yratio)
 
-    def pad(self, pad_width, mode=None, **kwargs):
+    def pad(self, pad_width, mode='constant', **kwargs):
         '''A method for padding the arr and sigma attributes and also updating
         the astrometry information in the header.
         '''
@@ -1694,7 +1719,7 @@ class AstroImage(object):
         # Store the original shape of the image array
         ny, nx = self.arr.shape
 
-        # Check if the X shift is an within 1 billianth of an integer value
+        # Check if the X shift is an within 1 billionth of an integer value
         if round(float(dx), 12).is_integer():
             # Force the shift to an integer value
             dx = np.int(round(dx))
@@ -1995,7 +2020,7 @@ class AstroImage(object):
                     del padY
 
             # Use this value to test for pixel saturation
-            satLimit = 16000
+            satLimit = 300000
 
             # Define kernal shape for an median filtering needed
             binX, binY = self.binning
