@@ -5,7 +5,7 @@ import subprocess
 import os
 import sys
 from astropy.io import fits
-from wcsaxes import WCS
+from astropy.wcs import WCS
 from astropy.wcs.utils import pixel_to_skycoord, proj_plane_pixel_scales
 from scipy.odr import *
 from scipy.ndimage import map_coordinates
@@ -22,7 +22,7 @@ import AstroImage
 # Import pdb for debugging
 import pdb
 
-def get_image_offsets(imgList, subPixel=False, mode='wcs'):
+def get_img_offsets(imgList, subPixel=False, mode='wcs'):
     """A function to compute the offsets between images using either the WCS
     values contained in each image header or using cross-correlation techniques
     with an emphasis on star alignment for sub-pixel accuracy.
@@ -43,7 +43,7 @@ def get_image_offsets(imgList, subPixel=False, mode='wcs'):
     # Catch the case where imgList has only one image
     if len(imgList) <= 1:
         print('Must have more than one image in the list to be aligned')
-        return imgList[0]
+        return (0, 0)
 
     # Catch the case where imgList has only two images
     if len(imgList) == 2:
@@ -183,7 +183,7 @@ def align_images(imgList, padding=0, mode='wcs', subPixel=False, offsets=None):
     # Check if a list of offsets was supplied and if they make sense
     if offsets is None:
         # If no offsets were supplid, then retrieve them using above function
-        offsets = get_image_offsets(imgList,
+        offsets = get_img_offsets(imgList,
             mode=mode, subPixel=subPixel)
     # Check if there are both x and y offsets provided
     elif hasattr(offsets, '__iter__') and len(offsets) == 2:
@@ -986,13 +986,17 @@ def build_pol_maps(Qimg, Uimg):
         Pmap.sigma[badInds] = 0.0
 
     # Apply the Ricean correction
-    # First check for where the Pmap is an insignificant detection
-    zeroInds = np.where(Pmap.arr <= Pmap.sigma)
-    if len(zeroInds[0]) > 0:
-        Pmap.arr[zeroInds] = Pmap.sigma[zeroInds]
+    # First compute a temporary "de-baised" array
+    tmpArr = Pmap.arr**2 - Pmap.sigma**2
 
-    # Then actually de-bias the map.
-    Pmap.arr = np.sqrt(Pmap.arr**2 - Pmap.sigma**2)
+    # Check if any of the debiased values are less than zero
+    zeroInds = np.where(tmpArr < 0)
+    if len(zeroInds[0]) > 0:
+        # Set all insignificant detections to zero
+        tmpArr[zeroInds] = 0
+
+    # Now we can safely take the sqare root of the debiased values
+    Pmap.arr = np.sqrt(tmpArr)
 
     # Parse the header information for building the PA map
     # Check for a DELPA keyword in the headers
@@ -1028,7 +1032,6 @@ def build_pol_maps(Qimg, Uimg):
 
     # Build the PA map and add the uncertaies in quadrature
     PAmap = (np.rad2deg(0.5*np.arctan2(Uimg, Qimg)) + deltaPA + 720.0) % 180.0
-
     if s_DPA > 0.0:
         PAmap.sigma = np.sqrt(PAmap.sigma**2 + s_DPA**2)
 
