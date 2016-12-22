@@ -1030,6 +1030,47 @@ def build_pol_maps(Qimg, Uimg):
     else:
         s_DPA = 0.0
 
+    # Now read the astrometry from the header and add instrument-to-equatorial
+    # rotation to the deltaPA value
+    wcsQ = WCS(Qimg.header)
+    wcsU = WCS(Uimg.header)
+
+    # Check if both Q and U have astrometry
+    if wcsQ.has_celestial and wcsU.has_celestial:
+        # Check if the CD matrices are the same in both images
+        if np.sum(np.abs((wcsQ.wcs.cd - wcsU.wcs.cd))) == 0:
+            # Grab the cd matrix
+            cd = wcsQ.wcs.cd
+            # Check if the frames have non-zero rotation
+            if cd[0,0] != 0 or cd[1,1] != 0:
+                # Compute rotationg angles
+                det  = cd[0,0]*cd[1,1] - cd[0,1]*cd[1,0]
+                sgn  = np.int(np.round(det/np.abs(det)))
+                rot1 = np.rad2deg(np.arctan2(sgn*cd[0,1], sgn*cd[0,0]))
+                rot2 = np.rad2deg(np.arctan2(-cd[1,0], cd[1,1]))
+
+                # Check that rotations are within 2 degrees of eachother
+                if np.abs(rot1 - rot2) < 2.0:
+                    # Take an average rotation value
+                    rotAng = 0.5*(rot1 + rot2)
+                elif np.abs(rot1 - rot2 - 360.0) < 2.0:
+                    rotAng = 0.5*(rot1 + rot2 - 360.0)
+                elif np.abs(rot1 - rot2 + 360.0) < 2.0:
+                    rotAng = 0.5*(rot1 + rot2 + 360.0)
+                else:
+                    print('Rotation angles do not agree!')
+                    pdb.set_trace()
+
+                # Check if the longitude pole is located where expected
+                if wcsQ.wcs.lonpole != 180.0:
+                    rotAng += (180.0 - wcsQ.wcs.lonpole)
+
+                # Add rotation angle to final deltaPA
+                deltaPA += rotAng
+        else:
+            print('The astrometry in U and Q do not seem to match.')
+            pdb.set_trace()
+
     # Build the PA map and add the uncertaies in quadrature
     PAmap = (np.rad2deg(0.5*np.arctan2(Uimg, Qimg)) + deltaPA + 720.0) % 180.0
     if s_DPA > 0.0:
