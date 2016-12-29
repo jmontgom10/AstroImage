@@ -28,7 +28,7 @@ from astropy.wcs.utils import proj_plane_pixel_scales
 from photutils import daofind
 
 # Finally import the associated "image_tools" python module
-import image_tools
+from . import utils
 
 ### DEFINE TWO FUNCTIONS TO BE USED IN TREATING PSF GAUSSIANS
 def build_cov_matrix(sx, sy, rhoxy):

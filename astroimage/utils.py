@@ -17,7 +17,7 @@ from astropy.convolution import Gaussian2DKernel
 from astropy.coordinates import SkyCoord, ICRS
 
 # Import AstroImage in order to check types...
-import AstroImage
+from . import astroimage
 
 # Import pdb for debugging
 import pdb
