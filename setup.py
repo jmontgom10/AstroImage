@@ -10,7 +10,14 @@ config = {
     'download_url': 'https://github.com/jmontgom10/AstroImage/zipball/master',
     'author_email': 'jmontgom.10@gmail.com',
     'version': '0.1',
-    'install_requires': ['nose'],
+    'install_requires': [
+        'nose',
+        'astropy',
+        'astroquery',
+        'numpy',
+        'scipy',
+        'WCSAxes'
+    ],
     'packages': ['astroimage'],
     'scripts': [],
     'name': 'astroimage'
