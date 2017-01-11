@@ -27,7 +27,7 @@ from astropy.wcs.utils import pixel_to_skycoord, skycoord_to_pixel
 from astropy.wcs.utils import proj_plane_pixel_scales
 from photutils import daofind
 
-# Finally import the associated "image_tools" python module
+# Finally import the associated "utils" python module
 from . import utils
 
 ### DEFINE TWO FUNCTIONS TO BE USED IN TREATING PSF GAUSSIANS
@@ -2087,7 +2087,7 @@ class AstroImage(object):
 
             if np.sum(deviations > 0):
                 # Inpaint those deviations
-                tmp1 = image_tools.inpaint_nans(corr, mask = deviations)
+                tmp1 = utils.inpaint_nans(corr, mask = deviations)
                 corr = tmp1
 
             # Check for the maximum of the cross-correlation function
@@ -2757,7 +2757,7 @@ class Bias(AstroImage):
         return np.mean(self.arr)
 
     def master_bias(biasList, clipSigma = 3.0):
-        return image_tools.stacked_average(biasList, clipSigma = clipSigma)
+        return utils.stacked_average(biasList, clipSigma = clipSigma)
 
     def overscan_polynomial(biasList, overscanPos):
         ## Loop through biasList and build a stacked average of the
@@ -2778,7 +2778,7 @@ class Bias(AstroImage):
             overscanList[i].arr = \
               biasList[i].arr[overscanPos1[0][1]:overscanPos1[1][1], \
                                   overscanPos1[0][0]:overscanPos1[1][0]]
-        masterOverscan = image_tools.stacked_average(overscanList)
+        masterOverscan = utils.stacked_average(overscanList)
 
         ## Average across each row.
         overscanRowValues = np.mean(masterOverscan, axis = 1)
@@ -2844,7 +2844,7 @@ class Flat(AstroImage):
         super(Flat, self).__init__(filename)
 
     def master_flat(flatList, clipSigma = 3.0):
-        return image_tools.stacked_average(flatList, clipSigma = clipSigma)
+        return utils.stacked_average(flatList, clipSigma = clipSigma)
 
 class Dark(AstroImage):
     """A subclass of the "Image" class: stores dark frames and provides some
@@ -2867,6 +2867,6 @@ class Dark(AstroImage):
             return expTimes[0]
 
     def dark_current(darkList, clipSigma = 3.0):
-        avgImg   = image_tools.stacked_average(darkList, clipSigma = clipSigma)
+        avgImg   = utils.stacked_average(darkList, clipSigma = clipSigma)
         darkTime = Dark.dark_time(darkList)
         return avgImg/darkTime

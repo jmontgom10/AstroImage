@@ -302,17 +302,21 @@ def align_images(imgList, padding=0, mode='wcs', subPixel=False, offsets=None):
     else:
         return alignedImgList
 
-def combine_images(imgList, output = 'MEAN',
+def combine_images(imgList, bkgList, output = 'MEAN',
                    bkgClipSigma = 5.0, starClipSigma = 40.0, iters=5,
                    weighted_mean = False,
-                   mean_bkg = 0.0, effective_gain = None, read_noise = None):
+                   effective_gain = None, read_noise = None):
     """Compute the median filtered mean of a stack of images.
     Standard deviation is computed from the variance of the stack of
     pixels.
 
     parameters:
     imgList        -- a list containing Image class objects.
-    output         -- [MEAN', 'SUM']
+    bkgList        -- this is a list of the background levels that were
+                      subtracted from the images in imgList. This should be
+                      ADDED back into the counts used to estimate pixel
+                      uncertainty using "effective_gain" and "read_noise".
+    output         -- ['MEAN', 'SUM']
                       the desired array to be returned be the function.
     bkgClipSigma   -- the level at which to trim outliers in the relatively
                       flat background (default = 5.0)
@@ -324,10 +328,6 @@ def combine_images(imgList, output = 'MEAN',
                       contained in each AstroImage instance to compute a final
                       weighted average image. If marked as True, then each image
                       in the imgList is supposed
-    mean_bkg       -- this is the mean background level that was subtracted from
-                      the images in imgList. This should be ADDED back into the
-                      counts used to estimate pixel uncertainty using
-                      "effective_gain" and "read_noise".
     effective_gain -- the conversion factor from image counts to electrons
                       (units of electrons/count). This number will be used in
                       estimating the Poisson contribution to the uncertainty
@@ -593,6 +593,10 @@ def combine_images(imgList, output = 'MEAN',
 
         # Compute uncertainty and store values
         if compute_uncertainty:
+            # Compute the mean background that was subtracted to produce
+            # background free images
+            mean_bkg = np.mean(bkgList)
+
             # Find those pixels where no flux seems to be detected
             if output.upper() == 'SUM':
                 poisCounts = outputImg + numImg*mean_bkg
@@ -602,8 +606,15 @@ def combine_images(imgList, output = 'MEAN',
             if output.upper() == 'MEAN':
                 poisCounts = outputImg + mean_bkg
                 rn_mask    = poisCounts <= (read_noise/effective_gain)
+                # I should not use np.sqrt(numImg - 1) in the denominator
+                # this is actually a theoretical estimate of the uncertainty...
+                # not a sample-variance used to estimate the uncertainty.
+                #
+                # sigmaImg   = np.sqrt(np.abs(poisCounts/effective_gain) +
+                #     (read_noise/effective_gain)**2)/np.sqrt(numImg - 1)
+                #
                 sigmaImg   = np.sqrt(np.abs(poisCounts/effective_gain) +
-                    (read_noise/effective_gain)**2)/np.sqrt(numImg - 1)
+                    (read_noise/effective_gain)**2)/np.sqrt(numImg)
 
             # Apply read_noise floor to the dimmest points in the image
             if np.sum(rn_mask) > 0:
@@ -626,7 +637,7 @@ def combine_images(imgList, output = 'MEAN',
     else:
         return imgList[0]
 
-def astrometry(img, override = False):
+def solve_astrometry(img, override = False):
     """A method to invoke astrometry.net and solve the astrometry of the image.
     """
     #######################
@@ -645,40 +656,75 @@ def astrometry(img, override = False):
         doAstrometry = True
 
     if doAstrometry:
-        # First test if the
-        proc = subprocess.Popen(['where', 'solve-field'],
-                                stdout=subprocess.PIPE,
-                                universal_newlines=True)
-        astrometryEXE = ((proc.communicate())[0]).rstrip()
-        proc.terminate()
-
-        if len(astrometryEXE) == 0:
-            raise OSError('Astrometry.net is not properly installed.')
+        # #
+        # # TODO FIGURE OUT SOME PLATFORM INDEPENDENT WAY TO TEST IF
+        # # ASTROMETRY.NET IS INSTALLED
+        # #
+        # # First test if the astrometry binary is installed
+        # proc = subprocess.Popen(['where', 'solve-field'],
+        #                         stdout=subprocess.PIPE,
+        #                         universal_newlines=True)
+        # astrometryEXE = ((proc.communicate())[0]).rstrip()
+        # proc.terminate()
+        #
+        # if len(astrometryEXE) == 0:
+        #     raise OSError('Astrometry.net is not properly installed.')
 
         # Make a copy of the image to be returned
         img1 = img.copy()
 
         # Test what kind of system is running
         if 'win' in sys.platform:
-            # If running in Windows,
-            # then define the "bash --login -c (cd ...)" command
-            # using Cygwin's "cygpath" to convert to POSIX format
-            proc = subprocess.Popen(['cygpath', os.getcwd()],
-                                    stdout=subprocess.PIPE,
-                                    universal_newlines=True)
-            curDir = ((proc.communicate())[0]).rstrip()
-            proc.terminate()
+            # If running in Windows, then...
 
-            # Convert filename to Cygwin compatible format
-            proc = subprocess.Popen(['cygpath', img.filename],
-                                    stdout=subprocess.PIPE,
-                                    universal_newlines=True)
-            inFile = ((proc.communicate())[0]).rstrip()
-            proc.terminate()
-            prefix = 'bash --login -c ("cd ' + curDir + '; '
-            suffix = '")'
-            delCmd = 'del '
-            shellCmd = True
+            try:
+                ###
+                # Cygwin
+                ###
+                # Try to parse using cygpath executable...
+                # then define the "bash --login -c (cd ...)" command
+                # using Cygwin's "cygpath" to convert to POSIX format
+                # Try to get the proper path using the cygpath executable
+                proc = subprocess.Popen(['cygpath', os.getcwd()],
+                                        stdout=subprocess.PIPE,
+                                        universal_newlines=True)
+                curDir = ((proc.communicate())[0]).rstrip()
+                proc.terminate()
+
+                # Convert filename to Cygwin compatible format
+                proc = subprocess.Popen(['cygpath', img.filename],
+                                        stdout=subprocess.PIPE,
+                                        universal_newlines=True)
+                inFile = ((proc.communicate())[0]).rstrip()
+                proc.terminate()
+
+                # Use this syntax to setup commands for the Cygwin bash.exe
+                prefix = 'bash --login -c ("cd ' + curDir + '; '
+                suffix = '")'
+                delCmd = 'del '
+                shellCmd = True
+            except:
+                ###
+                # BashOnWindows
+                ###
+                # Attempt to convert the current directory into the proper format
+                curDir = os.getcwd()
+                drive  = curDir[0]
+                curDir = curDir.replace(drive + ':\\', '/mnt/' + drive.lower() + '/')
+                curDir = curDir.replace('\\','/')
+
+                # Apply the same transformation to the input file
+                inFile = img.filename
+                drive  = inFile[0]
+                inFile = inFile.replace(drive + ':\\', '/mnt/' + drive.lower() + '/')
+                inFile = inFile.replace('\\','/')
+
+                # Use this syntax to setup commands for BashOnWindows
+                prefix = 'bash --login -c "cd ' + curDir + '; '
+                suffix = '"'
+                delCmd = 'del '
+                shellCmd = True
+
         else:
             # If running a *nix system,
             # then define null prefix/suffix strings
@@ -692,7 +738,6 @@ def astrometry(img, override = False):
         outputCmd    = ' --out tmp'
         noPlotsCmd   = ' --no-plots'
         overwriteCmd = ' --overwrite'
-#            dirCmd       = ' --dir debug'
         dirCmd = ''
 
         # Provide a guess at the plate scale
@@ -712,10 +757,13 @@ def astrometry(img, override = False):
         # Prevent writing any except the "tmp.wcs" file.
         # In the future it may be useful to set '--index-xyls'
         # to save star coordinates for photometry.
-        noOutFiles = ' --axy none --corr none' + \
-                     ' --match none --solved none' + \
-                     ' --new-fits none --rdls none' + \
-                     ' --solved none --index-xyls none'
+
+        noOutFiles = ' --new-fits none' + \
+                     ' --index-xyls none' + \
+                     ' --solved none' + \
+                     ' --match none' + \
+                     ' --rdls none' + \
+                     ' --corr none'
 
         # Build the final command
         command      = 'solve-field' + \
@@ -743,8 +791,10 @@ def astrometry(img, override = False):
         filePathList = img.filename.split(os.path.sep)
         if len(filePathList) > 1:
             wcsPath = os.path.dirname(img.filename) + os.path.sep + 'tmp.wcs'
+            axyPath = os.path.dirname(img.filename) + os.path.sep + 'tmp.axy'
         else:
             wcsPath = 'tmp.wcs'
+            axyPath = 'tmp.axy'
 
         # Read in the tmp.wcs file and create a WCS object
         if os.path.isfile(wcsPath):
@@ -807,12 +857,11 @@ def astrometry(img, override = False):
             img1.header['LATPOLE'] = LATPOLE
             img1.header['LONPOLE'] = LONPOLE
 
-            # Cleanup the none and WCS file,
+            # Cleanup the none, WCS, and axy files
             rmProc = subprocess.Popen(delCmd + wcsPath, shell=shellCmd)
             rmProc.wait()
             rmProc.terminate()
-            noneFile = os.path.join(os.getcwd(), 'none')
-            rmProc = subprocess.Popen(delCmd + noneFile, shell=shellCmd)
+            rmProc = subprocess.Popen(delCmd + axyPath, shell=shellCmd)
             rmProc.wait()
             rmProc.terminate()
 

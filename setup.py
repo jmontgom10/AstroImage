@@ -16,7 +16,11 @@ config = {
         'astroquery',
         'numpy',
         'scipy',
+        'matplotlib',
+        'psutil',
+        'photutils',
         'WCSAxes'
+
     ],
     'packages': ['astroimage'],
     'scripts': [],
