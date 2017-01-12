@@ -2,6 +2,14 @@
 *.fit
 *.fits
 
+# Ignore the build files
+build\
+build/
+dist\
+dist/
+astroimage.egg-info\
+astroimage.egg-info/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 __pycache__\
