@@ -502,7 +502,7 @@ class AstroImage(object):
             if hasattr(self, 'sigma'):
                 # The line below explodes when self.arr == 0
                 # output.sigma = np.abs(output.arr*other*self.sigma/self.arr)
-                output.sigma = np.abs((self.arr**(other - 1.0))*self.sigma)
+                output.sigma = np.abs(other*(self.arr**(other - 1.0))*self.sigma)
         else:
             print('Unexpected value in raising image to a power')
 
