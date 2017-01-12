@@ -1,6 +1,3 @@
-# Ignore my test files
-test*
-
 # Ignore any downloaded or produced *.fits files
 *.fit
 *.fits

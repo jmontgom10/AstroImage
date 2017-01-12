@@ -302,7 +302,7 @@ def align_images(imgList, padding=0, mode='wcs', subPixel=False, offsets=None):
     else:
         return alignedImgList
 
-def combine_images(imgList, bkgList, output = 'MEAN',
+def combine_images(imgList, bkgList=None, output = 'MEAN',
                    bkgClipSigma = 5.0, starClipSigma = 40.0, iters=5,
                    weighted_mean = False,
                    effective_gain = None, read_noise = None):
@@ -344,6 +344,16 @@ def combine_images(imgList, bkgList, output = 'MEAN',
         for img in imgList:
             if not hasattr(img, 'sigma'):
                 raise ValueError('All images must have a sigma array')
+
+    # Test if some value was provided for bkgList
+    if bkgList is not None:
+        # Test if the length of the *LIST* provided matches
+        if len(bkgList) != len(imgList):
+            raise ValueError('bkgList and imgList must be the same size')
+
+    # If no value was provided, then simply generate a list of zeros
+    else:
+        bkgList = [0 for i in range(len(imgList))]
 
     # Count the number of images to be combined
     numImg = len(imgList)
