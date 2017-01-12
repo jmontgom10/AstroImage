@@ -327,7 +327,8 @@ def combine_images(imgList, bkgList=None, output = 'MEAN',
     weighted_mean  -- this flag indicates whether to use the uncertainties
                       contained in each AstroImage instance to compute a final
                       weighted average image. If marked as True, then each image
-                      in the imgList is supposed
+                      in the imgList must have a sigma attribute. Otherwise,
+                      uncertainty weighting is skipped.
     effective_gain -- the conversion factor from image counts to electrons
                       (units of electrons/count). This number will be used in
                       estimating the Poisson contribution to the uncertainty
@@ -367,6 +368,9 @@ def combine_images(imgList, bkgList=None, output = 'MEAN',
             numBits = 32
         elif (dataType == np.int64) or (dataType == np.float64):
             numBits = 64
+        else:
+            # If some other datatype, then Python3 default is 64-bit values
+            numBits = 64
 
         # Compute the number of pixels that fit under the memory limit.
         memLimit    = (psutil.virtual_memory().available/
@@ -387,7 +391,7 @@ def combine_images(imgList, bkgList=None, output = 'MEAN',
         binX, binY = imgList[0].binning
 
         # Compute kernel shape
-        medianKernShape = (np.ceil(9.0/binX), np.ceil(9.0/binY))
+        medianKernShape = (np.int(np.ceil(9.0/binX)), np.int(np.ceil(9.0/binY)))
 
         # Initalize a final star mask
         starMask = np.zeros((ny,nx), dtype=int)
@@ -423,7 +427,7 @@ def combine_images(imgList, bkgList=None, output = 'MEAN',
             starMask1 = np.logical_and(starMask1, neighborCount > 2)
 
             # Accumulate these pixels into the final star mask
-            starMask += starMask1
+            starMask += starMask1.astype(int)
 
         # Cleanup temporary variables
         del thisArr, badInds, medImg
@@ -444,7 +448,7 @@ def combine_images(imgList, bkgList=None, output = 'MEAN',
             # Notify user how many "in-star pixels" were masked
             print('\n\nMasked a total of {0} pixels'.format(numInStarPix))
         else:
-            print('No pixels masked as "in-star" pixels')
+            print('\n\nNo pixels masked as "in-star" pixels')
             starMask[:,:] = False
 
         # Compute the number of subsections and display stats to user
