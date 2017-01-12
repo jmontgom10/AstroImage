@@ -474,7 +474,7 @@ class AstroImage(object):
                 output     = self.copy()
                 output.arr = (self.arr)**(other.arr)
             else:
-                print('Cannot subtract images with different shapes')
+                print('Cannot exponentiate images with different shapes')
                 return None
 
             # Attempt to propagate errors
@@ -485,14 +485,14 @@ class AstroImage(object):
             # or just give the existing sigma to the output
             if selfSig and otherSig:
                 output.sigma = np.abs(output.arr) * np.sqrt(
-                    (other.arr/self.arr*self.sigma)**2 +
+                    (other.arr*(self.sigma/self.arr))**2 +
                     (np.log(self.arr)*other.sigma)**2)
             elif selfSig and not otherSig:
                 # The line below explodes when self.arr == 0
                 # output.sigma = np.abs(output.arr*other.arr*self.sigma/self.arr)
                 output.sigma = np.abs((self.arr**(other.arr - 1.0))*self.sigma)
             elif not selfSig and otherSig:
-                print('const ** AstroImage not yet defined... not sure how?')
+                output.sigma = np.abs(other.arr)
 
         elif oneIsInt or oneIsFloat:
             output = self.copy()
@@ -508,6 +508,55 @@ class AstroImage(object):
 
         # Finall return the exponentiated image
         return output
+
+    # def __rpow__(self, other):
+    #     # Implements raising the image to some arbitrary power
+    #     bothAreImages = isinstance(other, self.__class__)
+    #     oneIsInt      = isinstance(other, int)
+    #     oneIsFloat    = isinstance(other, float)
+    #
+    #     if bothAreImages:
+    #         # Check that image shapes make sense
+    #         shape1     = self.arr.shape
+    #         shape2     = other.arr.shape
+    #         if shape1 == shape2:
+    #             output     = self.copy()
+    #             output.arr = (self.arr)**(other.arr)
+    #         else:
+    #             print('Cannot exponentiate images with different shapes')
+    #             return None
+    #
+    #         # Attempt to propagate errors
+    #         # Check which images have sigma arrays
+    #         selfSig  = hasattr(self, 'sigma')
+    #         otherSig = hasattr(other, 'sigma')
+    #         # Either add in quadrature,
+    #         # or just give the existing sigma to the output
+    #         if selfSig and otherSig:
+    #             output.sigma = np.abs(output.arr) * np.sqrt(
+    #                 (other.arr*(self.sigma/self.arr))**2 +
+    #                 (np.log(self.arr)*other.sigma)**2)
+    #         elif selfSig and not otherSig:
+    #             # The line below explodes when self.arr == 0
+    #             # output.sigma = np.abs(output.arr*other.arr*self.sigma/self.arr)
+    #             output.sigma = np.abs((self.arr**(other.arr - 1.0))*self.sigma)
+    #         elif not selfSig and otherSig:
+    #             output.sigma = np.abs(other.arr)
+    #
+    #     elif oneIsInt or oneIsFloat:
+    #         output = self.copy()
+    #         output.arr = self.arr**other
+    #
+    #         # propagate errors asuming ints and floats have no errors
+    #         if hasattr(self, 'sigma'):
+    #             # The line below explodes when self.arr == 0
+    #             # output.sigma = np.abs(output.arr*other*self.sigma/self.arr)
+    #             output.sigma = np.abs(other*(self.arr**(other - 1.0))*self.sigma)
+    #     else:
+    #         print('Unexpected value in raising image to a power')
+    #
+    #     # Finall return the exponentiated image
+    #     return output
 
     ##################################
     ### END OF MAGIC METHODS       ###
@@ -644,7 +693,7 @@ class AstroImage(object):
                                     (x.arr**2 + self.arr**2))
 
             else:
-                print('Cannot subtract images with different shapes')
+                print('Cannot arctan2 images with different shapes')
                 return None
 
         elif oneIsInt or oneIsFloat:
