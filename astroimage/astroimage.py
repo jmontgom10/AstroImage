@@ -153,8 +153,15 @@ class AstroImage(object):
     def __add__(self, other):
         # Implements addition.
         bothAreImages = isinstance(other, self.__class__)
-        oneIsInt      = isinstance(other, int)
-        oneIsFloat    = isinstance(other, float)
+        oneIsInt      = (isinstance(other, int) or
+                         isinstance(other, np.int8) or
+                         isinstance(other, np.int16) or
+                         isinstance(other, np.int32) or
+                         isinstance(other, np.int64))
+        oneIsFloat    = (isinstance(other, float) or
+                         isinstance(other, np.float16) or
+                         isinstance(other, np.float32) or
+                         isinstance(other, np.float64))
 
         if bothAreImages:
             # Check that image shapes make sense
@@ -201,8 +208,15 @@ class AstroImage(object):
     def __sub__(self, other):
         # Implements subtraction.
         bothAreImages = isinstance(other, self.__class__)
-        oneIsInt      = isinstance(other, int)
-        oneIsFloat    = isinstance(other, float)
+        oneIsInt      = (isinstance(other, int) or
+                         isinstance(other, np.int8) or
+                         isinstance(other, np.int16) or
+                         isinstance(other, np.int32) or
+                         isinstance(other, np.int64))
+        oneIsFloat    = (isinstance(other, float) or
+                         isinstance(other, np.float16) or
+                         isinstance(other, np.float32) or
+                         isinstance(other, np.float64))
 
         if bothAreImages:
             # Check that image shapes make sense
@@ -250,8 +264,15 @@ class AstroImage(object):
     def __mul__(self, other):
         # Implements multiplication.
         bothAreImages = isinstance(other, self.__class__)
-        oneIsInt      = isinstance(other, int)
-        oneIsFloat    = isinstance(other, float)
+        oneIsInt      = (isinstance(other, int) or
+                         isinstance(other, np.int8) or
+                         isinstance(other, np.int16) or
+                         isinstance(other, np.int32) or
+                         isinstance(other, np.int64))
+        oneIsFloat    = (isinstance(other, float) or
+                         isinstance(other, np.float16) or
+                         isinstance(other, np.float32) or
+                         isinstance(other, np.float64))
         if bothAreImages:
             # Check that image shapes make sense
             shape1     = self.arr.shape
@@ -304,13 +325,14 @@ class AstroImage(object):
         # Implements division using the / operator.
         bothAreImages = isinstance(other, self.__class__)
         oneIsInt      = (isinstance(other, int) or
-                        isinstance(other, np.int8) or
-                        isinstance(other, np.int16) or
-                        isinstance(other, np.int32) or
-                        isinstance(other, np.int64))
+                         isinstance(other, np.int8) or
+                         isinstance(other, np.int16) or
+                         isinstance(other, np.int32) or
+                         isinstance(other, np.int64))
         oneIsFloat    = (isinstance(other, float) or
-                        isinstance(other, np.float32) or
-                        isinstance(other, np.float64))
+                         isinstance(other, np.float16) or
+                         isinstance(other, np.float32) or
+                         isinstance(other, np.float64))
         oneIsArray    = isinstance(other, np.ndarray)
 
         # TODO
@@ -415,8 +437,15 @@ class AstroImage(object):
     def __mod__(self, other):
         # Compute the mod of two images or an image and a number
         bothAreImages = isinstance(other, self.__class__)
-        oneIsInt      = isinstance(other, int)
-        oneIsFloat    = isinstance(other, float)
+        oneIsInt      = (isinstance(other, int) or
+                         isinstance(other, np.int8) or
+                         isinstance(other, np.int16) or
+                         isinstance(other, np.int32) or
+                         isinstance(other, np.int64))
+        oneIsFloat    = (isinstance(other, float) or
+                         isinstance(other, np.float16) or
+                         isinstance(other, np.float32) or
+                         isinstance(other, np.float64))
 
         # Copy the self image for manipulation
         output = self.copy()
@@ -463,8 +492,15 @@ class AstroImage(object):
     def __pow__(self, other):
         # Implements raising the image to some arbitrary power
         bothAreImages = isinstance(other, self.__class__)
-        oneIsInt      = isinstance(other, int)
-        oneIsFloat    = isinstance(other, float)
+        oneIsInt      = (isinstance(other, int) or
+                         isinstance(other, np.int8) or
+                         isinstance(other, np.int16) or
+                         isinstance(other, np.int32) or
+                         isinstance(other, np.int64))
+        oneIsFloat    = (isinstance(other, float) or
+                         isinstance(other, np.float16) or
+                         isinstance(other, np.float32) or
+                         isinstance(other, np.float64))
 
         if bothAreImages:
             # Check that image shapes make sense
@@ -512,8 +548,15 @@ class AstroImage(object):
     # def __rpow__(self, other):
     #     # Implements raising the image to some arbitrary power
     #     bothAreImages = isinstance(other, self.__class__)
-    #     oneIsInt      = isinstance(other, int)
-    #     oneIsFloat    = isinstance(other, float)
+    #     oneIsInt      = (isinstance(other, int) or
+    #                      isinstance(other, np.int8) or
+    #                      isinstance(other, np.int16) or
+    #                      isinstance(other, np.int32) or
+    #                      isinstance(other, np.int64))
+    #     oneIsFloat    = (isinstance(other, float) or
+    #                      isinstance(other, np.float16) or
+    #                      isinstance(other, np.float32) or
+    #                      isinstance(other, np.float64))
     #
     #     if bothAreImages:
     #         # Check that image shapes make sense
@@ -668,8 +711,16 @@ class AstroImage(object):
         '''
         # Check what type of variable has been passed as the x argument.
         bothAreImages = isinstance(x, self.__class__)
-        oneIsInt      = isinstance(x, int)
-        oneIsFloat    = isinstance(x, float)
+        oneIsInt      = (isinstance(other, int) or
+                         isinstance(other, np.int8) or
+                         isinstance(other, np.int16) or
+                         isinstance(other, np.int32) or
+                         isinstance(other, np.int64))
+        oneIsFloat    = (isinstance(other, float) or
+                         isinstance(other, np.float16) or
+                         isinstance(other, np.float32) or
+                         isinstance(other, np.float64))
+
         if bothAreImages:
             # Check that image shapes make sense
             shape1     = self.arr.shape
