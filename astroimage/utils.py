@@ -53,7 +53,7 @@ def get_img_offsets(imgList, subPixel=False, mode='wcs'):
     #**********************************************************************
     # Get the offsets using whatever mode was selected
     #**********************************************************************
-    if mode.lower() == 'wcs':
+    if mode.upper() == 'WCS':
         # Compute the relative position of each of the images in the stack
         wcs1      = WCS(imgList[0].header)
         x1, y1    = imgList[0].arr.shape[1]//2, imgList[0].arr.shape[0]//2
@@ -76,7 +76,7 @@ def get_img_offsets(imgList, subPixel=False, mode='wcs'):
             imgXpos.append(float(x2))
             imgYpos.append(float(y2))
 
-    elif mode.lower() == 'cross_correlate':
+    elif mode.lower() == 'CROSS_CORRELATE':
         # Begin by selecting a reference image.
         # This should be the image with the BROADEST PSF. To determine this,
         # Let's grab the PSFparams of all the images and store the geometric
