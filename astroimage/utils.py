@@ -304,7 +304,6 @@ def align_images(imgList, padding=0, mode='wcs', subPixel=False, offsets=None):
 
 def combine_images(imgList, bkgList=None, output = 'MEAN',
                    bkgClipSigma = 5.0, starClipSigma = 40.0, iters=5,
-                   weighted_mean = False,
                    effective_gain = None, read_noise = None):
     """Compute the median filtered mean of a stack of images.
     Standard deviation is computed from the variance of the stack of
@@ -316,7 +315,7 @@ def combine_images(imgList, bkgList=None, output = 'MEAN',
                       subtracted from the images in imgList. This should be
                       ADDED back into the counts used to estimate pixel
                       uncertainty using "effective_gain" and "read_noise".
-    output         -- ['MEAN', 'SUM']
+    output         -- ['SUM', 'MEAN', 'WEIGHTED_MEAN']
                       the desired array to be returned be the function.
     bkgClipSigma   -- the level at which to trim outliers in the relatively
                       flat background (default = 5.0)
@@ -337,14 +336,19 @@ def combine_images(imgList, bkgList=None, output = 'MEAN',
                       of the flux in each pixel.
     """
     # Check that a proper output has been requested
-    if not (output.upper() == 'MEAN' or output.upper() == 'SUM'):
-        raise ValueError('The the keyword "output" must be "SUM" or "MEAN"')
+    if not (output.upper() == 'SUM' or
+        output.upper() == 'MEAN' or
+        output.upper() == 'WEIGHTED_MEAN'):
+        raise ValueError('Did not recognize value of "output" keyword')
 
-    if weighted_mean == True:
-        # Check that all the images have a sigma array
-        for img in imgList:
-            if not hasattr(img, 'sigma'):
-                raise ValueError('All images must have a sigma array')
+    # Check whether or not ALL images have uncertainty data
+    propagate_uncertainty = np.array([hasattr(img, 'sigma')
+        for img in imgList]).all()
+
+    # If WEIGHTED_MEAN output requested, but not all images have uncertainties,
+    # then raise an error
+    if (output.upper() == 'WEIGHTED_MEAN') and (not propagate_uncertainty):
+        raise ValueError('WEIGHTED_MEAN output requires uncertainties for all images')
 
     # Test if some value was provided for bkgList
     if bkgList is not None:
@@ -387,6 +391,7 @@ def combine_images(imgList, bkgList=None, output = 'MEAN',
 
         # Compute "star mask" for this stack of images
         print('\nComputing masks for bright sources')
+
         # Grab binning
         binX, binY = imgList[0].binning
 
@@ -459,16 +464,12 @@ def combine_images(imgList, bkgList=None, output = 'MEAN',
         # Initalize an array to store the final averaged image
         outputImg = np.zeros((ny,nx))
 
-        if weighted_mean == True:
-            # Initalize an array to store the uncertainty of the weighted mean
-            outputSig = np.ones((ny, nx))
+        # Initalize an array to store the uncertainty of the weighted mean
+        outputSig = np.ones((ny, nx))
 
         # Determine if uncertainty should be handled at all
-        compute_uncertainty = ((effective_gain is not None) and
-                               (read_noise is not None))
-        # # Initalize a final uncertainty array
-        # if compute_uncertainty:
-        #     sigmaImg  = np.zeros((ny,nx))
+        compute_poisson_uncertainty = ((effective_gain is not None) and
+                                       (read_noise is not None))
 
         # Compute the stacked output of each section
         # Begin by computing how to iterate through sigma clipping
@@ -499,11 +500,13 @@ def combine_images(imgList, bkgList=None, output = 'MEAN',
                 stack[i,:,:] = imgList[i].arr[thisRows[0]:thisRows[1],:]
 
             # Stack the selection region of the sigma arrays if needed
-            if weighted_mean == True:
+            if propagate_uncertainty == True:
                 stackSig = np.ma.zeros((numImg, secRows, nx), dtype = dataType)
                 for i in range(numImg):
                     stackSig[i,:,:] = imgList[i].sigma[thisRows[0]:thisRows[1],:]
 
+            # TODO -- SIMPLIFY THIS!
+            #
             # Catch and mask any NaNs or Infs (or -1e6 values)
             # before proceeding with the average
             NaNsOrInfs  = np.logical_not(np.isfinite(stack.data))
@@ -526,9 +529,9 @@ def combine_images(imgList, bkgList=None, output = 'MEAN',
 
             # This loop will iterate until the mask converges to an
             # unchanging state, or until clipSigma is reached.
-            numPoints     = np.zeros((secRows, nx), dtype=int) + numImg
-            scale         = (np.logical_not(starMask)*bkgSigmaStart +
-                             starMask*starSigmaStart)
+            numPoints = np.zeros((secRows, nx), dtype=int) + numImg
+            scale     = (np.logical_not(starMask).astype(int)*bkgSigmaStart +
+                         (starMask).astype(int)*starSigmaStart)
             for iLoop in range(iters):
                 print('\tProcessing section for (bkgSigma, starSigma) = ({0:3.2g}, {1:3.2g})'.format(
                     bkgSigmaStart + bkgSigmaStep*iLoop,
@@ -544,7 +547,7 @@ def combine_images(imgList, bkgList=None, output = 'MEAN',
 
                 # Save the newly computed outliers to the mask
                 stack.mask = np.logical_or(outliers, NaNsOrInfs)
-                # Save the number of unmasked points along AXIS
+                # Save the number of unmasked points along AXIS = 0
                 numPoints1 = numPoints
                 # Total up the new number of unmasked pixels in each column
                 numPoints  = np.sum(np.logical_not(stack.mask), axis = 0)
@@ -556,12 +559,75 @@ def combine_images(imgList, bkgList=None, output = 'MEAN',
                     break
                 else:
                     # Otherwise increment scale where new data are included
-                    scale = (scale +
-                             nextScale*np.logical_not(starMask)*bkgSigmaStep +
-                             nextScale*starMask*starSigmaStep)
+                    scale = (
+                        scale +
+                        nextScale*np.logical_not(starMask).astype(int)*bkgSigmaStep +
+                        nextScale*starMask.astype(int)*starSigmaStep)
 
-            # Compute the final output image.
-            if weighted_mean == True:
+            # Now that the outliers for this section have been identified with
+            # the iterative procedure above, compute the porper output.
+            if output.upper() == 'SUM':
+                # Figure out where there is no data and prevent divide-by-zero
+                denominator = numPoints.copy()
+                noSamples   = (numPoints == 0)
+
+                # Check if there are some fully masked pixels and prevent a
+                # divide by zero situation at those pixels
+                numNoSamp = np.sum(noSamples)
+                if numNoSamp > 0:
+                    noSampInds = np.where(noSamples)
+                    denominator[noSampInds] = numImg
+
+                # Compute the apropriate scaling up for the sum total
+                scaleFactor = (float(numImg)/denominator.astype(float))
+
+                # Compute the summed value (including a scale factor to account
+                # for masked pixels within the sum)
+                tmpOut = scaleFactor*np.sum(stack, axis = 0)
+
+                # Replace the values where we have no data with "NaN"
+                if numNoSamp > 0:
+                    tmpOut.data[noSampInds] = np.NaN
+
+                if propagate_uncertainty:
+                    # Propagate uncertainty of summed values
+                    stackSig.mask = stack.mask.copy()
+                    tmpSig = np.sqrt(np.ma.sum(stackSig**2, axis = 0).data)
+
+                    # Replace unsampled uncertainty values "NaN"
+                    if numNoSamp > 0:
+                        tmpSig[noSampInds] = np.NaN
+
+            elif output.upper() == 'MEAN':
+                # Figure out where there is no data
+                noSamples   = (numPoints == 0)
+
+                # Compute the mean of the unmasked values (no need to use the
+                # scale factor here since the mean accurately accounts for
+                # masked pixels)
+                tmpOut = np.ma.mean(stack, axis = 0)
+
+                # Check if there are some fully masked pixels because those
+                # masked values really have no value, so they will be filled
+                # with "NaN"
+                numNoSamp = np.sum(noSamples)
+                if numNoSamp > 0:
+                    noSampInds = np.where(noSamples)
+                    tmpOut.data[noSampInds] = np.NaN
+
+                if propagate_uncertainty:
+                    # Compy the outlier mask into the stackSig variable
+                    stackSig.mask = stack.mask.copy()
+
+                    # Compute the propagated uncertainty for the mean values
+                    tmpSig  = np.sqrt(np.ma.sum(stackSig**2, axis = 0).data)
+                    tmpSig /= numPoints
+
+                    # Replace unsampled uncertainty values "NaN"
+                    if numNoSamp > 0:
+                        tmpSig[noSampInds] = np.NaN
+
+            elif output.upper() == 'WEIGHTED_MEAN':
                 # Compute as a weighted mean of the stack
                 stackSig.mask = stack.mask.copy()
                 weights       = 1.0/(stackSig**2.0)
@@ -569,44 +635,33 @@ def combine_images(imgList, bkgList=None, output = 'MEAN',
                 sumOfWeights  = np.ma.sum(weights, axis = 0)
                 tmpOut        = weightedSum/sumOfWeights
 
-                # also compute this portion of the uncertainty image
-                tmpSig = np.sqrt(1.0/sumOfWeights)
-            else:
-                # Compute as unweighted mean or sum
-                if output.upper() == 'SUM':
-                    # Figure out where there is no data and prevent divide-by-zero
-                    denominator = numPoints.copy()
-                    noSamples   = numPoints == 0
-                    denominator[np.where(noSamples)] = numImg
-
-                    # Compute the apropriate scaling up for the sum total
-                    scaleFactor = (float(numImg)/denominator.astype(float))
-                    tmpOut      = scaleFactor*np.sum(stack, axis = 0)
-
-                    # Replace the values where we have no data with "NaN"
-                    tmpOut[np.where(noSamples)] = np.NaN
-
-                if output.upper() == 'MEAN':
-                    # Compute the mean of the unmasked values
-                    tmpOut = np.ma.mean(stack, axis = 0)
+                # Propagate uncertainty of WEIGHTED_MEAN values
+                tmpSig = np.sqrt(1.0/sumOfWeights.data)
 
             # Place the output and uncertainty in their holders
             outputImg[thisRows[0]:thisRows[1],:] = tmpOut.data
 
             # Use the weighted uncertainty if requested
-            if weighted_mean == True:
-                outputSig[thisRows[0]:thisRows[1],:] = tmpSig.data
+            if propagate_uncertainty:
+                outputSig[thisRows[0]:thisRows[1],:] = tmpSig
 
+        ####
+        # At this point, all of the sections of the image stack have been
+        # processed, so we can proceed to finalize the output and return
+        # a combined AstroImage object to the user.
+        ####
         # Get ready to return an AstroImage object to the user
         outImg = imgList[0].copy()
         outImg.arr = outputImg
 
         # Include the weighted uncertainty if requested
-        if weighted_mean == True:
+        if propagate_uncertainty:
             outImg.sigma = outputSig
 
-        # Compute uncertainty and store values
-        if compute_uncertainty:
+        # If instead of propagating provided uncertainties, the poisson noise
+        # and read-noise of each pixel should be used to estimate the output
+        # uncertainty, then do that here.
+        elif compute_poisson_uncertainty:
             # Compute the mean background that was subtracted to produce
             # background free images
             mean_bkg = np.mean(bkgList)
