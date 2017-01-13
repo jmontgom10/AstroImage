@@ -192,8 +192,7 @@ class AstroImage(object):
             output.arr = self.arr + other
 
         else:
-            print('Attempting to add image and something weird...')
-            return None
+            raise ValueError('Images can only operate with integers and floats.')
 
         # Return the added image
         return output
@@ -246,8 +245,7 @@ class AstroImage(object):
             output     = self.copy()
             output.arr = self.arr - other
         else:
-            print('Attempting to subtract image and something weird...')
-            return None
+            raise ValueError('Images can only operate with integers and floats.')
 
         # Return the subtracted image
         return output
@@ -305,9 +303,7 @@ class AstroImage(object):
             if hasattr(self, 'sigma'):
                 output.sigma = np.abs(output.sigma * other)
         else:
-            print('Attempting to multiply image by something weird...')
-            pdb.set_trace()
-            return None
+            raise ValueError('Images can only operate with integers and floats.')
 
         # Retun the multiplied image
         return output
@@ -400,8 +396,7 @@ class AstroImage(object):
                 output.sigma = self.sigma / other
 
         else:
-            print('Attempting to divide image by something weird...')
-            return None
+            raise ValueError('Images can only operate with integers and floats.')
 
         # Return the divided image
         return output
@@ -756,8 +751,7 @@ class AstroImage(object):
                 outImg.sigma = ((x.arr*self.sigma) /
                                 (x.arr**2 + self.arr**2))
         else:
-            print('Attempting to arctan with something weird')
-            return None
+            raise ValueError('Images can only operate with integers and floats.')
 
         return outImg
 
