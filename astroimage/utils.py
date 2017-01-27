@@ -10,7 +10,6 @@ from astropy.wcs.utils import pixel_to_skycoord, proj_plane_pixel_scales
 from scipy.odr import *
 from scipy.ndimage import map_coordinates
 from scipy.ndimage.filters import median_filter, gaussian_filter
-from photutils import daofind, Background, detect_sources
 from astropy.stats import sigma_clipped_stats, gaussian_fwhm_to_sigma
 from astropy.modeling import models, fitting
 from astropy.convolution import Gaussian2DKernel
@@ -21,6 +20,34 @@ from . import astroimage
 
 # Import pdb for debugging
 import pdb
+
+### DEFINE TWO FUNCTIONS TO BE USED IN TREATING PSF GAUSSIANS
+def build_cov_matrix(sx, sy, rhoxy):
+    # build the covariance matrix from sx, sy, and rhoxy
+    cov_matrix = np.matrix([[sx**2,       rhoxy*sx*sy],
+                            [rhoxy*sx*sy, sy**2      ]])
+
+    return cov_matrix
+
+# Define two functions for swapping between (sigma_x, sigma_y, theta) and
+# (sigma_x, sigma_y, rhoxy)
+def convert_angle_to_covariance(sx, sy, theta):
+    # Define the rotation matrix using theta
+    rotation_matrix = np.matrix([[np.cos(theta), -np.sin(theta)],
+                                 [np.sin(theta),  np.cos(theta)]])
+
+    # Build the eigen value matrix
+    lamda_matrix = np.matrix(np.diag([sx, sy]))
+
+    # Construct the covariance matrix
+    cov_matrix = rotation_matrix*lamda_matrix*lamda_matrix*rotation_matrix.I
+
+    # Extract the variance and covariances
+    sx1, sy1 = np.sqrt(cov_matrix.diagonal().A1)
+    rhoxy    = cov_matrix[0,1]/(sx1*sy1)
+
+    return sx1, sy1, rhoxy
+###
 
 def get_img_offsets(imgList, subPixel=False, mode='wcs'):
     """A function to compute the offsets between images using either the WCS
@@ -76,7 +103,7 @@ def get_img_offsets(imgList, subPixel=False, mode='wcs'):
             imgXpos.append(float(x2))
             imgYpos.append(float(y2))
 
-    elif mode.lower() == 'CROSS_CORRELATE':
+    elif mode.upper() == 'CROSS_CORRELATE':
         # Begin by selecting a reference image.
         # This should be the image with the BROADEST PSF. To determine this,
         # Let's grab the PSFparams of all the images and store the geometric
@@ -1097,10 +1124,10 @@ def build_pol_maps(Qimg, Uimg):
               np.isfinite(Pmap.arr),
               np.isfinite(Pmap.sigma)))
 
-    # Replace the stupid values with zeros\
-    badInds = np.where(badVals)
-    if len(badInds[0]) > 0:
-        Pmap.arr[badInds] = 0.0
+    # Replace the stupid values with zeros
+    if np.sum(badVals) > 0:
+        badInds             = np.where(badVals)
+        Pmap.arr[badInds]   = 0.0
         Pmap.sigma[badInds] = 0.0
 
     # Apply the Ricean correction
@@ -1148,46 +1175,16 @@ def build_pol_maps(Qimg, Uimg):
     else:
         s_DPA = 0.0
 
-    # Now read the astrometry from the header and add instrument-to-equatorial
-    # rotation to the deltaPA value
-    wcsQ = WCS(Qimg.header)
-    wcsU = WCS(Uimg.header)
+    # Grab the rotation of these images with respect to celestial north
+    Qrot = Qimg.get_rotation()
+    Urot = Uimg.get_rotation()
 
     # Check if both Q and U have astrometry
-    if wcsQ.has_celestial and wcsU.has_celestial:
-        # Check if the CD matrices are the same in both images
-        if np.sum(np.abs((wcsQ.wcs.cd - wcsU.wcs.cd))) == 0:
-            # Grab the cd matrix
-            cd = wcsQ.wcs.cd
-            # Check if the frames have non-zero rotation
-            if cd[0,0] != 0 or cd[1,1] != 0:
-                # Compute rotationg angles
-                det  = cd[0,0]*cd[1,1] - cd[0,1]*cd[1,0]
-                sgn  = np.int(np.round(det/np.abs(det)))
-                rot1 = np.rad2deg(np.arctan2(sgn*cd[0,1], sgn*cd[0,0]))
-                rot2 = np.rad2deg(np.arctan2(-cd[1,0], cd[1,1]))
-
-                # Check that rotations are within 2 degrees of eachother
-                if np.abs(rot1 - rot2) < 2.0:
-                    # Take an average rotation value
-                    rotAng = 0.5*(rot1 + rot2)
-                elif np.abs(rot1 - rot2 - 360.0) < 2.0:
-                    rotAng = 0.5*(rot1 + rot2 - 360.0)
-                elif np.abs(rot1 - rot2 + 360.0) < 2.0:
-                    rotAng = 0.5*(rot1 + rot2 + 360.0)
-                else:
-                    print('Rotation angles do not agree!')
-                    pdb.set_trace()
-
-                # Check if the longitude pole is located where expected
-                if wcsQ.wcs.lonpole != 180.0:
-                    rotAng += (180.0 - wcsQ.wcs.lonpole)
-
-                # Add rotation angle to final deltaPA
-                deltaPA += rotAng
-        else:
-            print('The astrometry in U and Q do not seem to match.')
-            pdb.set_trace()
+    if Qrot == Urot:
+        # Add rotation angle to final deltaPA
+        deltaPA += Qrot
+    else:
+        raise ValueError('The astrometry in U and Q do not seem to match.')
 
     # Build the PA map and add the uncertaies in quadrature
     PAmap = (np.rad2deg(0.5*np.arctan2(Uimg, Qimg)) + deltaPA + 720.0) % 180.0
