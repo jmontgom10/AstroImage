@@ -354,33 +354,37 @@ def test_img_pow():
     assert_equal(img3a.sigma, sig_a)
     assert_equal(img3b.sigma, sig_b)
 
-# def test_sqrt():
-#     # Built test images
-#     img1 = AstroImage()
-#
-#     # Builg test arrays
-#     arr1 = np.array([5])
-#
-#     # Built the test uncertainties
-#     sig1 = np.array([2])
-#
-#     # Populate the array attributes
-#     img1.arr = arr1
-#     img1.sigma = sig1
-#
-#     # Exponentiate the image (two different ways!)
-#     img2 = img1**3
-#     img3 = (img1*img1*img1)
-#
-#     # Subtract the numpy arrays
-#     res_a = arr1**3
-#
-#     # Compute expected uncertainties
-#     sig_a = np.abs(3*(arr1**2)*sig1)
-#
-#     # Assert that the numpy and AstroImage yield the same result
-#     assert_equal(img2.arr, res_a)
-#     assert_equal(img2.sigma, sig_a)
+def test_sqrt():
+    # Built test images
+    img1 = AstroImage()
+
+    # Builg test arrays
+    arr1 = np.array([5])
+
+    # Built the test uncertainties
+    sig1 = np.array([2])
+
+    # Populate the array attributes
+    img1.arr = arr1
+    img1.sigma = sig1
+
+    # Exponentiate the image (two different ways!)
+    img2 = np.sqrt(img1)
+    img3 = img1**0.5
+
+    # Subtract the numpy arrays
+    res_a = np.sqrt(arr1)
+
+    # Compute expected uncertainties
+    sig_a = 0.5*sig1/res_a
+
+    # Assert that the numpy and AstroImage yield the same result
+    assert_equal(img2.arr, res_a)
+    assert_equal(img2.sigma, sig_a)
+
+    # Assert that sqrt and __pow(self, 0.5)__ yeild the same result
+    assert_equal(img2.arr, img3.arr)
+    assert_equal(img2.sigma, img3.sigma)
 
 def test_null():
     # This should test if a "null" image can be generated and manipulated
@@ -412,3 +416,81 @@ def test_null():
     nullImg1 -= img1
     assert_equal(nullImg1.arr, -img1.arr)
     assert_equal(nullImg1.sigma, img1.sigma)
+
+# THESE SHOULD REALLY BE MORE GENERAL...
+# Right now they're only testing a small set of special cases.
+def test_shift1():
+    # Test if an integer pixel shift yields the results expected
+    dx, dy = 1, 1
+
+    img = AstroImage()
+    img.arr = np.zeros((5,5), dtype=float)
+    img.arr[2,2] = 1.0
+    img.sigma = np.zeros((5,5), dtype=float)
+    img.sigma[2,2] = 1.0
+
+    res = np.zeros((5,5), dtype=float)
+    res[3,3] = 1.0
+    sig = np.zeros((5,5), dtype=float)
+    sig[3,3] = 1.0
+
+    img.shift(dx, dy, padding=0.0)
+    assert (img.arr == res).all()
+    assert (img.sigma == sig).all()
+
+def test_shift2():
+    # Test if an integer pixel shift yields the results expected
+    dx, dy = 1.5, 1.5
+
+    # Initalize a basic image
+    img = AstroImage()
+    img.arr = np.zeros((5,5), dtype=float)
+    img.arr[2,2] = 1.0
+    img.sigma = np.zeros((5,5), dtype=float)
+    img.sigma[2,2] = 1.0
+
+    # Compute the expected output
+    res = np.zeros((5,5), dtype=float)
+    res[3:5,3:5] = 0.25
+    sig = np.zeros((5,5), dtype=float)
+    sig[3:5,3:5] = 0.25
+
+    # Perform the image shift and check if it matches the expected output
+    img.shift(dx, dy, padding=0.0)
+    assert (img.arr == res).all()
+    assert (img.sigma == sig).all()
+
+def test_rebin():
+    # Test if an rebinning an image yields the expected results
+    binX, binY = 2, 2
+
+    # Initalize a basic image
+    img1 = AstroImage()
+    img1.binning = (1, 1)
+    img1.arr = np.ones((6,6), dtype=float)
+    img1.arr[2:4,2:4] = 2.0
+    img1.sigma = np.ones((6,6), dtype=float)
+    img1.sigma[2:4,2:4] = 2.0
+
+    # Make a copy of that image
+    img2 = img1.copy()
+
+    # Perform the rebinning
+    img1.rebin(3, 3, total=False)
+    img2.rebin(3, 3, total=True)
+
+    # Compute the expected output
+    res1 = np.ones((3,3), dtype=float)
+    res1[1,1] = 2.0
+    sig1 = 0.5*np.ones((3,3), dtype=float)
+    sig1[1,1] = 1.0
+    res2 = 4*np.ones((3,3), dtype=float)
+    res2[1,1] = 8.0
+    sig2 = 2.0*np.ones((3,3), dtype=float)
+    sig2[1,1] = 4.0
+
+    # Check if the output matches the expected result
+    assert (img1.arr == res1).all()
+    assert (img1.sigma == sig1).all()
+    assert (img2.arr == res2).all()
+    assert (img2.sigma == sig2).all()
