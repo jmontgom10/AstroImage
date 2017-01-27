@@ -25,38 +25,10 @@ from wcsaxes import WCSAxes
 from astropy.coordinates import SkyCoord
 from astropy.wcs.utils import pixel_to_skycoord, skycoord_to_pixel
 from astropy.wcs.utils import proj_plane_pixel_scales
-from photutils import daofind
+from photutils import DAOStarFinder
 
 # Finally import the associated "utils" python module
 from . import utils
-
-### DEFINE TWO FUNCTIONS TO BE USED IN TREATING PSF GAUSSIANS
-def build_cov_matrix(sx, sy, rhoxy):
-    # build the covariance matrix from sx, sy, and rhoxy
-    cov_matrix = np.matrix([[sx**2,       rhoxy*sx*sy],
-                            [rhoxy*sx*sy, sy**2      ]])
-
-    return cov_matrix
-
-# Define two functions for swapping between (sigma_x, sigma_y, theta) and
-# (sigma_x, sigma_y, rhoxy)
-def convert_angle_to_covariance(sx, sy, theta):
-    # Define the rotation matrix using theta
-    rotation_matrix = np.matrix([[np.cos(theta), -np.sin(theta)],
-                                 [np.sin(theta),  np.cos(theta)]])
-
-    # Build the eigen value matrix
-    lamda_matrix = np.matrix(np.diag([sx, sy]))
-
-    # Construct the covariance matrix
-    cov_matrix = rotation_matrix*lamda_matrix*lamda_matrix*rotation_matrix.I
-
-    # Extract the variance and covariances
-    sx1, sy1 = np.sqrt(cov_matrix.diagonal().A1)
-    rhoxy    = cov_matrix[0,1]/(sx1*sy1)
-
-    return sx1, sy1, rhoxy
-###
 
 class AstroImage(object):
     """An object which stores an image array and header and provides a
@@ -697,7 +669,7 @@ class AstroImage(object):
 
         return outImg
 
-    def arctan2(self, x):
+    def arctan2(self, other):
         '''A simple method for computing the unambiguous arctan of the image
         and propagating its uncertainty (if a sigma array has been defined).
         The "self" instance is treated as the y value. Another image, array, or
@@ -705,7 +677,7 @@ class AstroImage(object):
         treated as the x value.
         '''
         # Check what type of variable has been passed as the x argument.
-        bothAreImages = isinstance(x, self.__class__)
+        bothAreImages = isinstance(other, self.__class__)
         oneIsInt      = (isinstance(other, int) or
                          isinstance(other, np.int8) or
                          isinstance(other, np.int16) or
@@ -719,24 +691,24 @@ class AstroImage(object):
         if bothAreImages:
             # Check that image shapes make sense
             shape1     = self.arr.shape
-            shape2     = x.arr.shape
+            shape2     = other.arr.shape
             if shape1 == shape2:
                 outImg     = self.copy()
-                outImg.arr = np.arctan2(self.arr, x.arr)
+                outImg.arr = np.arctan2(self.arr, other.arr)
 
                 # Perform error propagation
-                selfSig = hasattr(self, 'sigma')
-                xSig    = hasattr(x, 'sigma')
-                if selfSig and xSig:
-                    outImg.sigma = (np.sqrt((self.arr*x.sigma)**2 +
-                                            (x.arr*self.sigma)**2) /
-                                    (x.arr**2 + self.arr**2))
+                selfSig  = hasattr(self, 'sigma')
+                otherSig = hasattr(other, 'sigma')
+                if selfSig and otherSig:
+                    outImg.sigma = (np.sqrt((self.arr*other.sigma)**2 +
+                                            (other.arr*self.sigma)**2) /
+                                    (other.arr**2 + self.arr**2))
                 elif selfSig and not xSig:
-                    outImg.sigma = ((x.arr*self.sigma) /
-                                    (x.arr**2 + self.arr**2))
+                    outImg.sigma = ((other.arr*self.sigma) /
+                                    (other.arr**2 + self.arr**2))
                 elif not selfSig and xSig:
-                    outImg.sigma = ((self.arr*x.sigma) /
-                                    (x.arr**2 + self.arr**2))
+                    outImg.sigma = ((self.arr*other.sigma) /
+                                    (other.arr**2 + self.arr**2))
 
             else:
                 print('Cannot arctan2 images with different shapes')
@@ -744,12 +716,12 @@ class AstroImage(object):
 
         elif oneIsInt or oneIsFloat:
             outImg     = self.copy()
-            outImg.arr = np.arctan2(self.arr, x)
+            outImg.arr = np.arctan2(self.arr, other)
 
             # Perform error propagation
             if hasattr(self, 'sigma'):
-                outImg.sigma = ((x.arr*self.sigma) /
-                                (x.arr**2 + self.arr**2))
+                outImg.sigma = ((other.arr*self.sigma) /
+                                (other.arr**2 + self.arr**2))
         else:
             raise ValueError('Images can only operate with integers and floats.')
 
@@ -885,6 +857,49 @@ class AstroImage(object):
         # Write file to disk
         HDUlist.writeto(filename, clobber=True)
 
+    def get_rotation(self):
+        """This method will check if the image header has a celestial coordinate
+        system and returns the rotation angle between the image pixels and the
+        celestial coordinate system
+        """
+        # Start by extracting the wcs
+        thisWCS = WCS(self.header)
+
+        # Check if it has a celestial coordinate system
+        if thisWCS.has_celestial:
+            # Grab the cd matrix
+            cd = thisWCS.wcs.cd
+            # Check if the frames have non-zero rotation
+            if cd[0,0] != 0 or cd[1,1] != 0:
+                # If a non-zero rotation was found, then compute rotation angles
+                det  = cd[0,0]*cd[1,1] - cd[0,1]*cd[1,0]
+                sgn  = np.int(np.round(det/np.abs(det)))
+                rot1 = np.rad2deg(np.arctan2(sgn*cd[0,1], sgn*cd[0,0]))
+                rot2 = np.rad2deg(np.arctan2(-cd[1,0], cd[1,1]))
+
+                # Check that rotations are within 2 degrees of eachother
+                if np.abs(rot1 - rot2) < 2.0:
+                    # Take an average rotation value
+                    rotAng = 0.5*(rot1 + rot2)
+                elif np.abs(rot1 - rot2 - 360.0) < 2.0:
+                    rotAng = 0.5*(rot1 + rot2 - 360.0)
+                elif np.abs(rot1 - rot2 + 360.0) < 2.0:
+                    rotAng = 0.5*(rot1 + rot2 + 360.0)
+                else:
+                    raise ValueError('Rotation angles do not agree!')
+
+                # Check if the longitude pole is located where expected
+                if thisWCS.wcs.lonpole != 180.0:
+                    rotAng += (180.0 - thisWCS.wcs.lonpole)
+
+                # Now return the computed rotation angle
+                return rotAng
+            else:
+                # No rotation was found, so just return a zero
+                return 0.0
+        else:
+            return None
+
     def get_sources(self, satLimit=16000, crowdThresh=0, edgeThresh=0):
         """This method simply uses the daofind algorithm to extract source
         positions. It will also test for saturation using a default value of
@@ -905,9 +920,11 @@ class AstroImage(object):
         # Grab the image sky statistics
         mean, median, std = sigma_clipped_stats(self1.arr, sigma=3.0, iters=5)
 
-        # Start by finding all the stars in the image
-        sources = daofind(np.nan_to_num(self1.arr) - median,
-            fwhm=3.0, threshold=5.0*std)
+        # Start by instantiating a DAOStarFinder object
+        daofind = DAOStarFinder(fwhm=3.0, threshold=5.0*std)
+
+        # Use that object to find the stars in the image
+        sources = daofind(np.nan_to_num(self1.arr) - median)
 
         # Grab the image shape for later use
         ny, nx = self1.arr.shape
@@ -994,8 +1011,12 @@ class AstroImage(object):
                 with warnings.catch_warnings():
                     # Ignore model linearity warning from the fitter
                     warnings.simplefilter('ignore')
-                    # Use the find routine to check for other sources in this patch
-                    sources1 = daofind(patch_data, fwhm=3.0, threshold=3.0*std)
+
+                    # Start by instantiating a DAOStarFinder object
+                    daofind = DAOStarFinder(fwhm=3.0, threshold=5.0*std)
+
+                    # Use that object to check for other sources in this patch
+                    sources1 = daofind(patch_data)
 
                 # Test if more than one source was found
                 isolatedBool2 = len(sources1) < 2
@@ -1747,8 +1768,13 @@ class AstroImage(object):
         if ((x1 < 0) or (x2 > (nx - 1)) or
             (y1 < 0) or (y2 > (ny - 1)) or
             (x2 < x1) or (y2 < y1)):
-            print('bad crop values')
-            return None
+            raise ValueError('Bad crop values.')
+        else:
+            # Force crop points to be integers
+            x1 = int(np.round(x1))
+            x2 = int(np.round(x2))
+            y1 = int(np.round(y1))
+            y2 = int(np.round(y2))
 
         # Make a copy of the array and header
         cropArr = self.arr.copy()
@@ -2227,9 +2253,11 @@ class AstroImage(object):
                 mean, median, std = sigma_clipped_stats(
                     comboImg.arr, sigma=3.0, iters=5)
 
-                # Find the "stars" in the images
-                sources = daofind(comboImg.arr - median,
-                    fwhm=3.0, threshold=5.*std)
+                # Start by instantiating a DAOStarFinder object
+                daofind = DAOStarFinder(fwhm=3.0, threshold=5.0*std)
+
+                # Use that object to find the "stars" in the images
+                sources = daofind(comboImg.arr - median)
 
                 # Sort the sources lists by brightness
                 sortInds = np.argsort(sources['mag'])
@@ -2296,8 +2324,11 @@ class AstroImage(object):
                     rtCut = np.int(np.round(lfCut + starCutout))
                     patch_data = np.nan_to_num(comboImg.arr[btCut:tpCut,lfCut:rtCut])
 
-                    srcTest = daofind(patch_data - patch_data.min(),
-                        fwhm=3.0, threshold=3*std)
+                    # Start by instantiating a DAOStarFinder object
+                    daofind = DAOStarFinder(fwhm=3.0, threshold=3.0*std)
+
+                    # Use that object to find the sources in the patch
+                    srcTest = daofind(patch_data - patch_data.min())
 
                     # Count the length of the source table found
                     crowdBool = np.logical_or(crowdBool, len(srcTest) > 1)
