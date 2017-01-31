@@ -24,7 +24,7 @@ from astropy.wcs import WCS
 from wcsaxes import WCSAxes
 from astropy.coordinates import SkyCoord
 from astropy.wcs.utils import pixel_to_skycoord, skycoord_to_pixel
-from astropy.wcs.utils import proj_plane_pixel_scales
+from astropy.wcs.utils import proj_plane_pixel_scales, proj_plane_pixel_area
 from photutils import DAOStarFinder
 
 # Finally import the associated "utils" python module
@@ -1334,33 +1334,51 @@ class AstroImage(object):
         self.arr  = self.arr[sciencePos1[0][1]:sciencePos1[1][1],
                              sciencePos1[0][0]:sciencePos1[1][0]]
 
-
-
-    def scale(self, copy=False):
+    def scale(self, quantity='flux', copy=False):
         """Scales the data in the arr attribute using the BSCALE and BZERO
         values from the header. If no such values exist, then return original
         array.
         """
         # Scale the array
         scaledArr = self.arr.copy()
-        keys = self.header.keys()
-        if 'BSCALE' in keys:
-            scaledArr = self.header['BSCALE']*scaledArr
-        if 'BZERO' in keys:
-            scaledArr = scaledArr + self.header['BZERO']
+        if 'BSCALE' in self.header.keys():
+            if quantity.upper() == 'FLUX':
+                scaleConst1 = self.header['BSCALE']
+
+                # Check for uncertainty in BSCALE
+                if 'SBSCALE' in self.header.keys():
+                    sig_scaleConst1 = self.header['SBSCALE']
+
+            elif quantity.upper() == 'INTENSITY':
+                pixArea     = proj_plane_pixel_area(WCS(self.header))*(3600**2)
+                scaleConst1 = self.header['BSCALE']/pixArea
+
+                # Check for uncertainty in BSCALE
+                if 'SBSCALE' in self.header.keys():
+                    sig_scaleConst1 = self.header['SBSCALE']/pixArea
+        else:
+            scaleConst1 = 1
+
+        if 'BZERO' in self.header.keys():
+            scaleConst0 = self.header['BZERO']
+        else:
+            scaleConst0 = 0
+
+        # Perform the actual scaling!
+        scaledArr = scaleConst1*self.arr.copy() + scaleConst0
 
         # Apply scaling uncertainty if available
         if hasattr(self, 'sigma'):
-            # If there is a sigma array, then tret it
-            if 'BSCALE' in keys:
-                if 'SBSCALE' in keys:
-                    # Include the uncertainty in the scaling...
-                    sigArr = np.abs(scaledArr)*np.sqrt((self.sigma/self.arr)**2
-                        + (self.header['SBSCALE']/self.header['BSCALE'])**2)
-                else:
-                    # Otherwise just scale up the uncertainty...
-                    sigArr  = self.sigma.copy()
-                    sigArr *= self.header['BSCALE']
+            # If there is an uncertainty in the scaling factor, then propagate
+            # that into the uncertainty
+            if 'SBSCALE' in self.header.keys():
+                # Include the uncertainty in the scaling...
+                sigArr = np.abs(scaledArr)*np.sqrt((self.sigma/self.arr)**2
+                    + (sig_scaleConst1/scaleConst1)**2)
+            else:
+                # Otherwise just scale up the uncertainty...
+                sigArr  = self.sigma.copy()
+                sigArr *= scaleConst1
 
         # Check if a copy of the image was requested
         if copy:
@@ -1677,6 +1695,26 @@ class AstroImage(object):
                     outHead['PC2_2'] = outHead['PC2_2']
                     outHead['PC1_2'] = outHead['PC1_2']/aspect
                     outHead['PC2_1'] = outHead['PC2_1']*aspect
+
+            # Adjust BZERO and BSCALE for new pixel size, unless these values
+            # are used to define unsigned integer data types.
+            # TODO handle special cases of unsigned integers, where BSCALE may
+            # be used to define integer data types.
+            if not total:
+                if 'BSCALE' in self.header.keys():
+                    bscale = self.header['BSCALE']
+                    # If BSCALE has been set to something reasonable, then adjust it
+                    if (bscale != 0) and (bscale != 1):
+                        outHead['BSCALE'] = (bscale/pixRatio,
+                            'Calibration Factor')
+
+                if 'BZERO' in self.header.keys():
+                    bzero  = self.header['BZERO']
+                    # If BZERO has been set to something reasonable, then adjust it
+                    if (bzero != 0):
+                        outHead['BZERO'] = (bzero/pixRatio,
+                            'Additive Constant for Calibration')
+
         else:
             # If no header exists, then buil a basic one
             keywords = ['NAXIS2', 'NAXIS1']
