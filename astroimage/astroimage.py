@@ -2847,11 +2847,11 @@ class AstroImage(object):
             RAminorTicksFreq  = minorTicksFreqs[RAspacingInd]
             DecMinorTicksFreq = minorTicksFreqs[DecSpacingInd]
 
-        # TODO NEST THIS RETURN WITHIN THE 'IF' TO GUARANTEE THAT IT ONLY HAPPENS
-        # IF A WCS IS PRESENT
-        return ((RAspacing, DecSpacing),
-            (RAformatter, DecFormatter),
-            (RAminorTicksFreq, DecMinorTicksFreq))
+            return ((RAspacing, DecSpacing),
+                (RAformatter, DecFormatter),
+                (RAminorTicksFreq, DecMinorTicksFreq))
+        else:
+            return None
 
     def show(self, axes=None, origin='lower', noShow=False,
              scale='linear', vmin=None, vmax=None,
@@ -2933,6 +2933,7 @@ class AstroImage(object):
                 Dec_ax.set_minor_frequency(minorTicksFreq[1])
             else:
                 axes = fig.add_subplot(1,1,1)
+
             # Set the axes line properties
             for axis in ['top','bottom','left','right']:
                 axes.spines[axis].set_linewidth(4)
