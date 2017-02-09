@@ -48,8 +48,10 @@ class AstroImage(object):
             except:
                 raise FileNotFoundError('File {0} does not exist'.format(filename))
 
-            # If the file loaded properly, then proceed as usual
+            # Read in the header and store it in an attribute.
             self.header = HDUlist[0].header.copy()
+
+            # Parse the number of bits used for each pixel
             floatFlag   = self.header['BITPIX'] < 0
             numBits     = np.abs(self.header['BITPIX'])
 
@@ -75,14 +77,15 @@ class AstroImage(object):
                 # Check that binning makes sense and store it if it does
                 self.binning = tuple([int(di) for di in self.header['CRDELT*'].values()])
             else:
-                # No binning found, so call this (1x1) binning.
+                # No binning found, so call this (1x1) binning, and add that
+                # information to the image header under the CRDELT keyword.
                 self.binning = tuple(np.ones(self.arr.ndim).astype(int))
                 for i, di in enumerate(self.binning):
                     self.header['CRDELT'+str(i)] = di
 
             # Loop through the HDUlist and check for a 'SIGMA' HDU
             for HDU in HDUlist:
-                if HDU.name == 'SIGMA':
+                if HDU.name.upper() == 'SIGMA':
                     self.sigma = HDU.data
 
             # Set the file type properties
@@ -243,16 +246,17 @@ class AstroImage(object):
                          isinstance(other, np.float16) or
                          isinstance(other, np.float32) or
                          isinstance(other, np.float64))
+        otherIsArray  = isinstance(other, np.ndarray)
+
         if bothAreImages:
             # Check that image shapes make sense
-            shape1     = self.arr.shape
-            shape2     = other.arr.shape
-            if shape1 == shape2:
+            shapeSelf  = self.arr.shape
+            shapeOther = other.arr.shape
+            if shapeSelf == shapeOther:
                 output     = self.copy()
                 output.arr = self.arr * other.arr
             else:
-                print('Cannot multiply images with different shapes')
-                return None
+                raise ValueError('Cannot multiply images with different shapes')
 
             # Attempt to propagate errors
             # Check which images have sigma arrays
@@ -274,20 +278,48 @@ class AstroImage(object):
 
             if hasattr(self, 'sigma'):
                 output.sigma = np.abs(output.sigma * other)
+
+        elif otherIsArray:
+            output = self.copy()
+            output.arr = self.arr * other
+            return output
+
         else:
-            raise ValueError('Images can only operate with integers and floats.')
+            raise ValueError('Cannot multiply AstroImage by {0}'.format(type(other)))
 
         # Retun the multiplied image
         return output
 
     def __rmul__(self, other):
         # Implements reverse multiplication.
-        if other == 0:
-            output = self.copy()
-            output.arr = np.zeros(self.arr.shape)
-            return output
-        else:
+        bothAreImages = isinstance(other, self.__class__)
+        oneIsInt      = (isinstance(other, int) or
+                         isinstance(other, np.int8) or
+                         isinstance(other, np.int16) or
+                         isinstance(other, np.int32) or
+                         isinstance(other, np.int64))
+        oneIsFloat    = (isinstance(other, float) or
+                         isinstance(other, np.float16) or
+                         isinstance(other, np.float32) or
+                         isinstance(other, np.float64))
+        otherIsArray  = isinstance(other, np.ndarray)
+
+        if bothAreImages or oneIsInt or oneIsFloat:
             return self.__mul__(other)
+
+        elif otherIsArray:
+            # THIS SECTION OF CODE IS NEVER EXECUTED BECAUSE IF THE LEFT-HAND
+            # OBJECT IS AN numpy.ndarray THEN THE numpy.ndarray__mul__() METHOD
+            # IS INVOKED. THE PROBLEM WITH THAT METHOD IS THAT IT SEEMS TO LOOP
+            # OVER EACH ELEMENT OF THE ARRAY AND ATTEMPTS TO STORE GENERATE A
+            # WHOLE ARRAY OF AstroImage OBJECTS. NEEDLESS TO SAY, THAT EATS UP
+            # MEMORY **** CRAZY FAST ****
+            outImg = self.copy()
+            outImg.arr = self.arr * other
+            return outImg
+
+        else:
+            raise ValueError('Cannot multiply AstroImage by {0}'.format(type(other)))
 
     def __div__(self, other):
         # Implements division using the / operator.
@@ -305,6 +337,26 @@ class AstroImage(object):
 
         # TODO
         # I should include the possibility of operating with numpy array
+        # NOTE
+        # IT WOULD SEEM THAT IT IS IMPOSSIBLE TO ACCURATELY HANDLE THE CASE
+        #
+        # numpy.ndarray * AstroImage
+        #
+        # because the numpy.ndarray methods control the multiplication, and they
+        # loop through each element of the array while performing
+        # multiplication, so from Python's perspective, you're performing
+        # multiple instances of
+        #
+        # int * AstroImage
+        #
+        # And storing the results in the numpy.ndarray. Obviously, this will
+        # occupy a tremendous amount of space, so attempting to use this case
+        # should be avoided at all costs!!!
+        #
+        # It is unclear if it is possible to actually detect when the user
+        # attempts to compute
+        #
+        # numpy.ndarray * AstroImage
 
         if bothAreImages:
             # Initalize some variables to check if zeros need to be handled
@@ -328,8 +380,7 @@ class AstroImage(object):
                 output.arr = self.arr / other.arr
 
             else:
-                print('Cannot divide images with different shapes')
-                return None
+                raise ValueError('Cannot divide images with different shapes')
 
             # Attempt to propagate errors
             # Check which images have sigma arrays
@@ -776,16 +827,22 @@ class AstroImage(object):
 
         return output
 
-    def write(self, filename = '', dtype = None):
+    def write(self, filename = '', dtype = None, clobber=True):
         # Test if a filename was provided and default to current filename
         if len(filename) == 0:
             filename = self.filename
 
+        # Compute booleans for which output data is present
+        hasArr  = hasattr(self, 'arr')
+        hasHead = hasattr(self, 'header')
+        hasSig  = hasattr(self, 'sigma')
 
         # Make copies of the output data
-        outArr = self.arr.copy()
-        outHead = self.header.copy()
-        if hasattr(self, 'sigma'):
+        if hasArr:
+            outArr = self.arr.copy()
+        if hasHead:
+            outHead = self.header.copy()
+        if hasSig:
             outSig = self.sigma.copy()
 
 
@@ -798,17 +855,17 @@ class AstroImage(object):
                 raise ValueError('dtype not recognized')
 
             # Next convert the sigma data if it exists
-            if hasattr(self, 'sigma'):
+            if hasSig:
                 outSig = outSig.astype(dtype)
 
             # Now update the header to include that information
             # First parse which bitpix value is required
-            #define BYTE_IMG      8  /*  8-bit unsigned integers */
-            #define SHORT_IMG    16  /* 16-bit   signed integers */
-            #define LONG_IMG     32  /* 32-bit   signed integers */
-            #define LONGLONG_IMG 64  /* 64-bit   signed integers */
-            #define FLOAT_IMG   -32  /* 32-bit single precision floating point */
-            #define DOUBLE_IMG  -64  /* 64-bit double precision floating point */
+            # define BYTE_IMG      8  /*  8-bit unsigned integers */
+            # define SHORT_IMG    16  /* 16-bit   signed integers */
+            # define LONG_IMG     32  /* 32-bit   signed integers */
+            # define LONGLONG_IMG 64  /* 64-bit   signed integers */
+            # define FLOAT_IMG   -32  /* 32-bit single precision floating point */
+            # define DOUBLE_IMG  -64  /* 64-bit double precision floating point */
             isByte    = ((dtype is np.byte) or (dtype is np.int8))
             isInt16   = (dtype is np.int16)
             isInt32   = (dtype is np.int32)
@@ -831,31 +888,48 @@ class AstroImage(object):
             # Now update the header itself
             outHead['BITPIX'] = bitpix
 
-        # Build a new HDU object to store the data
-        arrHDU = fits.PrimaryHDU(data = outArr,
-                                 header = outHead,
-                                 do_not_scale_image_data=True)
+        # Initalize an empty variable to make it possible to ignore the whole
+        # shebang when there is NO array data and NO header data, etc...
 
-        # Replace the original header (since some cards may have been stripped)
-        arrHDU.header = self.header
+        if hasArr:
+            # Build a new HDU object to store the data
+            arrHDU = fits.PrimaryHDU(data = outArr,
+                                     do_not_scale_image_data=True)
+        else:
+            raise ValueError('There was no data in this AstroImage object.')
+
+        if hasHead:
+            # Replace the original header (since some cards may have been stripped)
+            arrHDU.header = self.header
 
         # If there is a sigma attribute,
         # then include it in the list of HDUs
-        try:
+        if hasSig:
             # Bulid a secondary HDU
             sigmaHDU = fits.ImageHDU(data = outSig,
                                      name = 'sigma',
-                                     header = outHead,
                                      do_not_scale_image_data=True)
             HDUs = [arrHDU, sigmaHDU]
-        except:
+        else:
             HDUs = [arrHDU]
 
-        # Build the final output HDUlist
-        HDUlist = fits.HDUList(HDUs)
+        if HDUs is not None:
+            # Build the final output HDUlist
+            HDUlist = fits.HDUList(HDUs)
 
-        # Write file to disk
-        HDUlist.writeto(filename, clobber=True)
+            # Write file to disk
+            HDUlist.writeto(filename, clobber=clobber)
+        else:
+            raise ValueError('There was no data in this AstroImage object.')
+
+    def get_plate_scales(self):
+        """This is a convenience method for computing the plate scales along
+        each axis, which can, in principle, be differente from eachother
+        """
+
+        pdb.set_trace()
+        return 1
+
 
     def get_rotation(self):
         """This method will check if the image header has a celestial coordinate
@@ -1784,7 +1858,6 @@ class AstroImage(object):
                     if len(xPad) > 1: xPad = xPad[0]
                     if len(yPad) > 1: yPad = yPad[0]
                 else:
-                    pdb.set_trace()
                     xPad, yPad = pad_width, pad_width
 
                 # Now apply the actual updates to the header
@@ -2453,8 +2526,7 @@ class AstroImage(object):
                     keepInds = np.where(keepStarList)
                     sources  = sources[keepInds]
                 else:
-                    print('There are fewer than 9 stars left. Is something wrong?')
-                    pdb.set_trace()
+                    raise RuntimeError('Fewer than 9 stars found: cannot compute subpixel offsets')
 
                 # Cull the list to the brightest square number of stars
                 if keepStarCount > 25:
@@ -2464,8 +2536,7 @@ class AstroImage(object):
                 elif keepStarCount > 9:
                     keepStarCount = 9
                 else:
-                    print('There are fewer than 9 stars left. Is something wrong?')
-                    pdb.set_trace()
+                    raise RuntimeError('Fewer than 9 stars found: cannot compute subpixel offsets')
 
                 # Perform the actual data cut
                 sources = sources[0:keepStarCount]
@@ -2559,8 +2630,7 @@ class AstroImage(object):
                 # Do a final check to see if these values are logical.
                 # Sub-pixel perterbations greater than 2-pixels are rejected.
                 if (dx1 > 2) or (dy1 > 2):
-                    print('Sub-pixel values seem illogical')
-                    pdb.set_trace()
+                    raise RuntimeError('Illogical sub-pixel offsets.')
 
                 # Accumulate the fractional shift on top of the integer shift
                 # computed earlier
@@ -2713,8 +2783,7 @@ class AstroImage(object):
             Gx = ndimage.prewitt(self.arr, axis=1)
             Gy = ndimage.prewitt(self.arr, axis=0)
         else:
-            print('kernel value not recognized')
-            pdb.set_trace()
+            raise ValueError('kernel keyword value must be "SOBEL" or "PREWITT"')
 
         return (Gx, Gy)
 
