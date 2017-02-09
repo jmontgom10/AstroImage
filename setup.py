@@ -11,15 +11,16 @@ config = {
     'author_email': 'jmontgom.10@gmail.com',
     'version': '0.1',
     'install_requires': [
-        'nose',
-        'astropy',
-        'astroquery',
-        'numpy',
-        'scipy',
-        'matplotlib',
-        'psutil',
-        'photutils',
-        'WCSAxes'
+        'nose >= 1.3',
+        'astropy >= 1.2',
+        'astroquery >= 0.3',
+        'numpy >= 1.11',
+        'scipy >= 0.15',
+        'matplotlib >= 1.1',
+        'psutil >= 3.0',
+        'photutils >= 0.3',
+        'scikit-image >= 0.11',
+        'wcsaxes >= 0.6'
 
     ],
     'packages': ['astroimage'],

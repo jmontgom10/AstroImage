@@ -21,7 +21,6 @@ import warnings
 # Catch the "UserWarning" in the init procedure
 
 from astropy.wcs import WCS
-from wcsaxes import WCSAxes
 from astropy.coordinates import SkyCoord
 from astropy.wcs.utils import pixel_to_skycoord, skycoord_to_pixel
 from astropy.wcs.utils import proj_plane_pixel_scales, proj_plane_pixel_area
