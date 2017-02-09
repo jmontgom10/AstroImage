@@ -927,7 +927,9 @@ class AstroImage(object):
         each axis, which can, in principle, be differente from eachother
         """
 
-        pdb.set_trace()
+        # Read in the WCS
+        thisWCS = WCS(self.header)
+
         return 1
 
 
@@ -3083,7 +3085,7 @@ class Dark(AstroImage):
     methods for dark type operations.
     """
 
-    def __init(self, filename = ''):
+    def __init__(self, filename = ''):
         super(Dark, self).__init__(filename)
 
     def dark_time(darkList):
