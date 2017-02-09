@@ -51,7 +51,8 @@ class AstroImage(object):
             self.header = HDUlist[0].header.copy()
 
             # Test if there is any WCS present in this header
-            # NOTE: IT WOULD SEEM THAT *THIS* IS WHAT IS CAUSING THE 'FK5' ERROR
+            # NOTE: IT WOULD SEEM THAT THE WCS(self.header) CALL IS WHAT IS
+            # CAUSING THE 'FK5' ERROR
             #
             # WARNING: FITSFixedWarning: RADECSYS= 'FK5 '
             # the RADECSYS keyword is deprecated, use RADESYSa. [astropy.wcs.wcs]
@@ -1619,21 +1620,26 @@ class AstroImage(object):
             headDict = dict(zip(keywords, values))
             outHead  = fits.Header(headDict)
 
+        # Reread the WCS from the output header
+        outWCS = WCS(outHead)
+
         if copy:
             # If a copy was requesty, then return a copy of the original image
             # with a newly rebinned array
             outImg         = self.copy()
             outImg.arr     = rebinArr
             outImg.header  = outHead
-            # TODO make binning a (dx, dy) tuple
-            outImg.binning = xratio * outImg.binning
+            outImg.binning = (xratio*outImg.binning[0],
+                              yratio*outImg.binning[1])
+            if outWCS.has_celestial: outImg.wcs = outWCS
             return outImg
         else:
             # Otherwise place the rebinned array directly into the Image object
             self.arr     = rebinArr
             self.header  = outHead
-            # TODO make binning a (dx, dy) tuple
-            self.binning = xratio * self.binning
+            self.binning = (xratio * self.binning[0],
+                            yratio * self.binning[1])
+            if outWCS.has_celestial: self.wcs = outWCS
 
     def rebin(self, nx1, ny1, copy=False, total=False):
         """Rebins the image using sigma attribute to produce a weighted average.
@@ -1797,6 +1803,9 @@ class AstroImage(object):
             headDict = dict(zip(keywords, values))
             outHead  = fits.Header(headDict)
 
+        # Reread the WCS from the output header
+        outWCS = WCS(outHead)
+
         if copy:
             # If a copy was requesty, then return a copy of the original image
             # with a newly rebinned array
@@ -1811,9 +1820,10 @@ class AstroImage(object):
             if hasattr(self, 'header'):
                 outImg.header  = outHead
 
-            # TODO make binning a (dx, dy) tuple
             outImg.binning = (outImg.binning[0]/xratio,
                               outImg.binning[1]/yratio)
+
+            if outWCS.has_celestial: outImg.wcs = outWCS
 
             # Return the updated image object
             return outImg
@@ -1827,9 +1837,11 @@ class AstroImage(object):
             if hasattr(self, 'header'):
                 self.header  = outHead
 
-            # TODO make binning a (dx, dy) tuple
             self.binning = (self.binning[0]/xratio,
                             self.binning[1]/yratio)
+
+            if outWCS.has_celestial: self.wcs = outWCS
+
 
     def pad(self, pad_width, mode='constant', **kwargs):
         '''A method for padding the arr and sigma attributes and also updating
@@ -1868,6 +1880,10 @@ class AstroImage(object):
 
                 # And store those updateds in the self object
                 self.header = tmpHeader
+
+                tmpWCS = WCS(tmpHeader)
+                if tmpWCS.has_celestial:
+                    self.wcs = tmpWCS
 
     def crop(self, x1, x2, y1, y2, copy=False):
         """This method crops the image array to the locations specified by the
@@ -1909,6 +1925,9 @@ class AstroImage(object):
             outHead['CRPIX1'] = outHead['CRPIX1'] - x1
             outHead['CRPIX2'] = outHead['CRPIX2'] - y1
 
+        # Reread the WCS from the output header
+        outWCS = WCS(outHead)
+
         if copy:
             # If a copy was requesty, then return a copy of the original image
             # with a newly cropped array
@@ -1920,6 +1939,8 @@ class AstroImage(object):
             if hasattr(self, 'sigma'):
                 outImg.sigma  = cropSig
 
+            if outWCS.has_celestial: outImg.wcs = outWCS
+
             return outImg
         else:
             # Otherwise place the rebinned array directly into the Image object
@@ -1929,6 +1950,8 @@ class AstroImage(object):
             # Handle sigma array if it exists
             if hasattr(self, 'sigma'):
                 self.sigma = cropSig
+
+            if outWCS.has_celestial: self.wcs = outWCS
 
     def shift(self, dx, dy, conserve_flux = True, padding=-1e6):
         """A method to shift the image dx pixels to the right and dy pixels up.
@@ -2104,6 +2127,9 @@ class AstroImage(object):
                 self.header['CRPIX1'] = self.header['CRPIX1'] + dx
                 self.header['CRPIX2'] = self.header['CRPIX2'] + dy
 
+                # Make the self.wcs attribute is also updated
+                self.wcs = WCS(self.header)
+
     def in_image(self, coords, edge=0):
         """A method to test which (RA, Dec) coordinates lie within the image.
 
@@ -2178,6 +2204,10 @@ class AstroImage(object):
 
             if len(self.header['CTYPE*']) > 0:
                 del self.header['CTYPE*']
+
+        # Also clear the self.wcs attribute if it exists
+        if hasattr(self, 'wcs'):
+            del self.wcs
 
     def get_img_offsets(self, img, subPixel=False, mode='wcs'):
         """A method to compute the displacement offsets between two the "self"
