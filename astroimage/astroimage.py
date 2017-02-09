@@ -51,6 +51,16 @@ class AstroImage(object):
             # Read in the header and store it in an attribute.
             self.header = HDUlist[0].header.copy()
 
+            # Test if there is any WCS present in this header
+            # NOTE: IT WOULD SEEM THAT *THIS* IS WHAT IS CAUSING THE 'FK5' ERROR
+            #
+            # WARNING: FITSFixedWarning: RADECSYS= 'FK5 '
+            # the RADECSYS keyword is deprecated, use RADESYSa. [astropy.wcs.wcs]
+            #
+            thisWCS = WCS(self.header)
+            if thisWCS.has_celestial:
+                self.wcs = thisWCS
+
             # Parse the number of bits used for each pixel
             floatFlag   = self.header['BITPIX'] < 0
             numBits     = np.abs(self.header['BITPIX'])
@@ -926,25 +936,17 @@ class AstroImage(object):
         """This is a convenience method for computing the plate scales along
         each axis, which can, in principle, be differente from eachother
         """
-
-        # Read in the WCS
-        thisWCS = WCS(self.header)
-
-        return 1
-
+        return proj_plane_pixel_scales(self.wcs)
 
     def get_rotation(self):
         """This method will check if the image header has a celestial coordinate
         system and returns the rotation angle between the image pixels and the
         celestial coordinate system
         """
-        # Start by extracting the wcs
-        thisWCS = WCS(self.header)
-
         # Check if it has a celestial coordinate system
-        if thisWCS.has_celestial:
+        if hasattr(self, 'wcs'):
             # Grab the cd matrix
-            cd = thisWCS.wcs.cd
+            cd = self.wcs.wcs.cd
             # Check if the frames have non-zero rotation
             if cd[0,0] != 0 or cd[1,1] != 0:
                 # If a non-zero rotation was found, then compute rotation angles
@@ -965,8 +967,8 @@ class AstroImage(object):
                     raise ValueError('Rotation angles do not agree!')
 
                 # Check if the longitude pole is located where expected
-                if thisWCS.wcs.lonpole != 180.0:
-                    rotAng += (180.0 - thisWCS.wcs.lonpole)
+                if self.wcs.wcs.lonpole != 180.0:
+                    rotAng += (180.0 - self.wcs.wcs.lonpole)
 
                 # Now return the computed rotation angle
                 return rotAng
@@ -1426,7 +1428,7 @@ class AstroImage(object):
                     sig_scaleConst1 = self.header['SBSCALE']
 
             elif quantity.upper() == 'INTENSITY':
-                pixArea     = proj_plane_pixel_area(WCS(self.header))*(3600**2)
+                pixArea     = proj_plane_pixel_area(self.wcs)*(3600**2)
                 scaleConst1 = self.header['BSCALE']/pixArea
 
                 # Check for uncertainty in BSCALE
@@ -1582,7 +1584,6 @@ class AstroImage(object):
         # Check if there is a header needing modification
         if hasattr(self, 'header'):
             outHead = self.header.copy()
-            wcs     = WCS(self.header)
 
             # Update the NAXIS values
             outHead['NAXIS1'] = nx1
@@ -1591,16 +1592,16 @@ class AstroImage(object):
             # Update the CRPIX values
             outHead['CRPIX1'] = (self.header['CRPIX1'] + 0.5)*xratio - 0.5
             outHead['CRPIX2'] = (self.header['CRPIX2'] + 0.5)*yratio - 0.5
-            if wcs.wcs.has_cd():
+            if self.wcs.wcs.has_cd():
                 # Attempt to use CD matrix corrections, first
                 # Apply updates to CD valus
-                thisCD = wcs.wcs.cd
+                thisCD = self.wcs.wcs.cd
                 # TODO set CDELT value properly in the "astrometry" step
                 outHead['CD1_1'] = thisCD[0,0]/xratio
                 outHead['CD1_2'] = thisCD[0,1]/yratio
                 outHead['CD2_1'] = thisCD[1,0]/xratio
                 outHead['CD2_2'] = thisCD[1,1]/yratio
-            elif wcs.wcs.has_pc():
+            elif self.wcs.wcs.has_pc():
                 # Apply updates to CDELT valus
                 outHead['CDELT1'] = outHead['CDELT1']/xratio
                 outHead['CDELT2'] = outHead['CDELT2']/yratio
@@ -1741,7 +1742,6 @@ class AstroImage(object):
         # Check if there is a header needing modification
         if hasattr(self, 'header'):
             outHead = self.header.copy()
-            wcs     = WCS(self.header)
 
             # Update the NAXIS values
             outHead['NAXIS1'] = nx1
@@ -1750,16 +1750,16 @@ class AstroImage(object):
             # Update the CRPIX values
             outHead['CRPIX1'] = (self.header['CRPIX1'] + 0.5)*xratio + 0.5
             outHead['CRPIX2'] = (self.header['CRPIX2'] + 0.5)*yratio + 0.5
-            if wcs.wcs.has_cd():
+            if self.wcs.wcs.has_cd():
                 # Attempt to use CD matrix corrections, first
                 # Apply updates to CD valus
-                thisCD = wcs.wcs.cd
+                thisCD = self.wcs.wcs.cd
                 # TODO set CDELT value properly in the "astrometry" step
                 outHead['CD1_1'] = thisCD[0,0]/xratio
                 outHead['CD1_2'] = thisCD[0,1]/yratio
                 outHead['CD2_1'] = thisCD[1,0]/xratio
                 outHead['CD2_2'] = thisCD[1,1]/yratio
-            elif wcs.wcs.has_pc():
+            elif self.wcs.wcs.has_pc():
                 # Apply updates to CDELT valus
                 outHead['CDELT1'] = outHead['CDELT1']/xratio
                 outHead['CDELT2'] = outHead['CDELT2']/yratio
@@ -1850,8 +1850,7 @@ class AstroImage(object):
             tmpHeader = self.header.copy()
 
             # Check if the header has good WCS
-            wcs = WCS(tmpHeader)
-            if wcs.has_celestial:
+            if self.wcs.has_celestial:
                 # Parse the pad_width parameter
                 if len(pad_width) > 1:
                     # If separate x and y paddings were specified, check them
@@ -2100,10 +2099,8 @@ class AstroImage(object):
 
         # Finally, update the header information
         if hasattr(self, 'header'):
-            wcs = WCS(self.header)
-
             # Check if the header contains celestial WCS coords
-            if wcs.has_celestial:
+            if self.wcs.has_celestial:
                 # Update the header astrometry
                 self.header['CRPIX1'] = self.header['CRPIX1'] + dx
                 self.header['CRPIX2'] = self.header['CRPIX2'] + dy
@@ -2124,11 +2121,8 @@ class AstroImage(object):
                   arcsec from the edge of the image, then a False value is
                   returned.
         """
-        # Grab the WCS from the header
-        thisWCS = WCS(self.header)
-
         # Transform coordinates to pixel positions
-        x, y = coords.to_pixel(thisWCS)
+        x, y = coords.to_pixel(self.wcs)
 
         # Make sure that x and y are at least one dimension long
         if x.size == 1:
@@ -2195,10 +2189,15 @@ class AstroImage(object):
         ########################################################################
         if mode.lower() == 'wcs':
             # Grab self image WCS and pixel center
-            wcs1   = WCS(self.header)
-            wcs2   = WCS(img.header)
-            x1     = np.mean([wcs1.wcs.crpix[0], wcs2.wcs.crpix[0]])
-            y1     = np.mean([wcs1.wcs.crpix[1], wcs2.wcs.crpix[1]])
+            try:
+                wcs1 = self.wcs.copy()
+                wcs2 = img.wcs.copy()
+            except:
+                raise RuntimeError('One of the images does not have a builtin WCS')
+
+            # Compute the basic pointing of the two images
+            x1 = np.mean([wcs1.wcs.crpix[0], wcs2.wcs.crpix[0]])
+            y1 = np.mean([wcs1.wcs.crpix[1], wcs2.wcs.crpix[1]])
 
             # Convert pixels to sky coordinates
             RA1, Dec1 = wcs1.all_pix2world(x1, y1, 0)
@@ -2753,8 +2752,7 @@ class AstroImage(object):
 
         # Check if there is a header in this image
         if hasattr(self, 'header'):
-            wcs        = WCS(self.header)
-            pix_scales = proj_plane_pixel_scales(wcs)
+            pix_scales = self.get_plate_scales()
             if len(self.header['CDELT*']) > 0:
                 # If there are CDELT values,
                 if ((pix_scales[0] != self.header['CDELT1']) or
@@ -2795,10 +2793,9 @@ class AstroImage(object):
         tick frequency.
         """
         # Grab the WCS from the header.
-        wcs = WCS(self.header)
-        if wcs.has_celestial:
+        if hasattr(self, 'wcs'):
             # First compute the image dimensions in arcsec
-            ps_x, ps_y    = proj_plane_pixel_scales(wcs)
+            ps_x, ps_y    = self.get_plate_scales()
             height, width = (
                 np.array(self.arr.shape)
                 *np.array([ps_y, ps_x])*3600*u.arcsec)
@@ -2830,7 +2827,7 @@ class AstroImage(object):
             # Figure out which major tick spacing provides the FEWEST ticks
             # but greater than 3
             y_cen, x_cen = 0.5*np.array(self.arr.shape)
-            RA_cen, Dec_cen = wcs.wcs_pix2world([x_cen], [y_cen], 0)
+            RA_cen, Dec_cen = self.wcs.wcs_pix2world([x_cen], [y_cen], 0)
 
             # Find the index of the proper tick spacing for each axis
             RAspacingInd  = np.max(np.where(np.floor(
@@ -2850,6 +2847,8 @@ class AstroImage(object):
             RAminorTicksFreq  = minorTicksFreqs[RAspacingInd]
             DecMinorTicksFreq = minorTicksFreqs[DecSpacingInd]
 
+        # TODO NEST THIS RETURN WITHIN THE 'IF' TO GUARANTEE THAT IT ONLY HAPPENS
+        # IF A WCS IS PRESENT
         return ((RAspacing, DecSpacing),
             (RAformatter, DecFormatter),
             (RAminorTicksFreq, DecMinorTicksFreq))
@@ -2896,13 +2895,10 @@ class AstroImage(object):
 
         # Create the figure and axes for displaying the image
         if axes is None:
-            # TODO add a check for WCS values(???)
-
             # Create a new figure and axes
-            wcs  = WCS(self.header)
             fig  = plt.figure(figsize = (8,8))
-            if wcs.has_celestial:
-                axes = fig.add_subplot(1, 1, 1, projection=wcs)
+            if hasattr(self, 'wcs'):
+                axes = fig.add_subplot(1, 1, 1, projection=self.wcs)
 
                 # Set the axes linewidth
                 axes.coords.frame.set_linewidth(2)
