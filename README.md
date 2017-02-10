@@ -12,7 +12,7 @@ This package can be installed directly from the latest available source on
 github via the command
 
 ```
-pip install https://github.com/jmontgom/AstroImage/tarball/master
+pip install https://github.com/jmontgom10/AstroImage/tarball/master
 ```
 
 ## Description
