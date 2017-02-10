@@ -1467,7 +1467,7 @@ class AstroImage(object):
             try:
                 outImg.sigma = sigArr
             except:
-                pass
+                raise AttributeError('Could not store sigma array')
 
             return outImg
         else:
@@ -1477,7 +1477,7 @@ class AstroImage(object):
             try:
                 self.sigma = sigArr
             except:
-                pass
+                raise AttributeError('Could not store sigma array')
 
     def frebin(self, nx1, ny1, copy=False, total=False):
         """Rebins the image using a flux conservative method. If 'copy' is True,

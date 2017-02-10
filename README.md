@@ -6,6 +6,17 @@ essentially a container for a FITS image, but it also includes a decent set of
 methods for common operations on images (e.g. computing gradients, croping,
 shifting, etc...).
 
+## Installation
+
+This package can be installed directly from the latest available source on
+github via the command
+
+```
+pip install https://github.com/jmontgom/AstroImage/tarball/master
+```
+
+## Description
+
 The curent version of the class includes several methods for operating on
 "stacks" of images. These methods operate not on individual AstroImage instances
 but on images but on LISTS of AstroImage instances. All of the stack operations
