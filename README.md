@@ -15,6 +15,13 @@ github via the command
 pip install https://github.com/jmontgom10/AstroImage/tarball/master
 ```
 
+If you completely hate this package and would like to uninstall it, that can be
+done using the command
+
+```
+pip uninstall astroimage
+```
+
 ## Description
 
 The curent version of the class includes several methods for operating on
@@ -41,10 +48,10 @@ The name of the base class is "AstroImage", and the subclasses are "Bias",
 "Dark", and "Flat". The base class can be imported using
 
 ```
-from AstroImage import AstroImage
+from astroimage.astroimage import AstroImage
 ```
 
-and FITS images can be read in with the following
+and FITS images can be read in with the following command
 
 ```
 img1 = AstroImage('/path/to/FITS/file/img1.fits')
@@ -53,9 +60,9 @@ img1 = AstroImage('/path/to/FITS/file/img1.fits')
 # Dependencies and Setup
 
 The AstroImage class depends on a number of other python packages. I recommend
-using the Anaconda environment, as that comes with numpy, scipy, astropy, and matplotlib
-preinstalled. If you elect not to use Anaconda, then make sure to get those
-packages properly installed before proceeding to install the AstroImage
+using the Anaconda environment, as that comes with numpy, scipy, astropy, and
+matplotlib preinstalled. If you elect not to use Anaconda, then make sure to get
+those packages properly installed before proceeding to install the AstroImage
 dependencies.
 
 ## wcsaxes

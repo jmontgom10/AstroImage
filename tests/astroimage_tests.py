@@ -503,7 +503,7 @@ def test_scale():
         img0 = AstroImage()
         img0.arr = 2.0*np.ones((1,1), dtype=float)
         img0.sigma = 3.0*np.ones((1,1), dtype=float)
-        img0.header = Header(dict(zip(['BSCALE', 'BZERO'], [3.0, 4.0])))
+        img0.header.update(dict(zip(['BSCALE', 'BZERO'], [3.0, 4.0])))
 
         # Scale the image using slightly different methods
         img1 = img0.scale(copy=True)
@@ -516,6 +516,14 @@ def test_scale():
         assert_equal(img1.arr[0,0], img2.arr[0,0])
         assert_equal(img1.sigma[0,0], img2.sigma[0,0])
 
+        # Now attempt to scale BACK img1 and img2
+        img1 = img1.scale(copy=True)
+        img2.scale()
+
+        # Test that they are both returned to their original value
+        assert_equal(img1.arr[0,0], img0.arr[0,0])
+        assert_equal(img1.arr[0,0], img2.arr[0,0])
+
         # Add an uncertainty to the BSCALE keyword and make sure that is being
         # handled properly
         img0.header['SBSCALE'] = 0.5
@@ -524,6 +532,6 @@ def test_scale():
         # Compare the results with what is expected
         assert_equal(img3.arr[0,0], 2.0*3.0 + 4.0)
         uncert = np.abs(img3.arr[0,0])*np.sqrt(
-            (img0.sigma[0,0]/img0.arr[0,0])**2 + 
+            (img0.sigma[0,0]/img0.arr[0,0])**2 +
             (img0.header['SBSCALE']/img0.header['BSCALE'])**2)
         assert_equal(img3.sigma[0,0], uncert)

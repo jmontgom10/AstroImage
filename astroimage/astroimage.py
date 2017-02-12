@@ -35,6 +35,9 @@ class AstroImage(object):
     """
 
     def __init__(self, filename=''):
+        ##########
+        # If the filename is not a null string, then find the file and read it.
+        ##########
         if len(filename) > 0:
             # Replace dot notation
             # (for some reason the leading dot was causing errors...)
@@ -82,6 +85,10 @@ class AstroImage(object):
             # Store the data as the correct data type
             self.arr = HDUlist[0].data.astype(dataType, copy = False)
 
+            # Store an attribute to track whether the array has been scaled
+            # using whatever information is in the header
+            self._scaled_quantity = None
+
             # If binning has been specified, then set it...
             if ('CRDELT1' in self.header) or ('CRDELT2' in self.header):
                 # Check that binning makes sense and store it if it does
@@ -110,6 +117,29 @@ class AstroImage(object):
             # # should be ignored until further notice
             # except UserWarning:
             #     pass
+
+        ##########
+        # If no filename was provided, then we should generate a 'null' image
+        ##########
+        else:
+            self.arr = np.zeros((1, 1), dtype=np.float64)
+            self.dtype = np.float64
+            self.filename = 'null.fits'
+            self.binning = (1, 1)
+            nullHeader  = fits.Header()
+            nullHeader.append(('SIMPLE', True, 'Written by IDL:  Sat Feb 11 21:08:41 2017'))
+            nullHeader.append(('BITPIX', -32, 'Number of bits per data pixel'))
+            nullHeader.append(('NAXIS', 2, 'Number of data axes'))
+            nullHeader.append(('NAXIS1', 1))
+            nullHeader.append(('NAXIS2', 1,))
+            nullHeader.append(('EXTEND', True, 'FITS data may contain extensions'))
+            # nullHeader.append(('DATE', '2017-02-12', 'Creation UTC (CCCC-MM-DD) date of FITS header'))
+            nullHeader.add_comment("FITS (Flexible Image Transport System) format is defined in 'Astronomy")
+            nullHeader.add_comment("and Astrophysics', volume 376, page 359; bibcode 2001A&A...376..359H")
+            self.header = nullHeader
+            self.wcs = WCS(self.header)
+            self.header.update(self.wcs.to_header())
+            self._scaled_quantity = None
 
     def __pos__(self):
         # Implements behavior for unary positive (e.g. +some_object)
@@ -945,8 +975,13 @@ class AstroImage(object):
         """
         # Check if it has a celestial coordinate system
         if hasattr(self, 'wcs'):
-            # Grab the cd matrix
-            cd = self.wcs.wcs.cd
+            if self.wcs.has_cd():
+                # Grab the cd matrix
+                cd = self.wcs.wcs.cd
+            elif self.wcs.has_pc():
+                # Convert the pc matrix into a cd matrix
+                cd = self.wcs.wcs.cdelt*self.wcs.wcs.pc
+
             # Check if the frames have non-zero rotation
             if cd[0,0] != 0 or cd[1,1] != 0:
                 # If a non-zero rotation was found, then compute rotation angles
@@ -975,6 +1010,7 @@ class AstroImage(object):
             else:
                 # No rotation was found, so just return a zero
                 return 0.0
+
         else:
             return None
 
@@ -1248,129 +1284,6 @@ class AstroImage(object):
 
         return ({'sx':sx, 'sy':sy, 'theta':theta}, patch_data1)
 
-    # def get_PSF_old(self, shape='gaussian'):
-    #     """This method analyses the stars in the image and returns the PSF
-    #     properties of the image. The default mode fits 2D-gaussians to the
-    #     brightest, isolated stars in the image. Future versions could use there
-    #     2MASS sersic profile, etc...
-    #     """
-    #     # Grab the image sky statistics
-    #     mean, median, std = sigma_clipped_stats(self.arr, sigma=3.0, iters=5)
-    #
-    #     # Start by finding all the stars in the image
-    #     sources = daofind(self.arr - median, fwhm=3.0, threshold=15.0*std)
-    #
-    #     # Eliminate stars near the image edge
-    #     ny, nx = self.arr.shape
-    #     xStars, yStars = sources['xcentroid'].data, sources['ycentroid'].data
-    #     badXstars = np.logical_or(xStars < 50, xStars > nx - 50)
-    #     badYstars = np.logical_or(yStars < 50,  yStars > ny - 50)
-    #     edgeStars = np.logical_or(badXstars, badYstars)
-    #     if np.sum(edgeStars) > 0:
-    #         sources = sources[np.where(np.logical_not(edgeStars))]
-    #
-    #     # Eliminate any stars with neighbors within 30 pixels
-    #     keepFlags = np.ones_like(sources['flux'].data, dtype='bool')
-    #     for i, star in enumerate(sources):
-    #         # Compute the distance between this star and other stars
-    #         xs, ys = star['xcentroid'], star['ycentroid']
-    #         dist = np.sqrt((sources['xcentroid'].data - xs)**2 +
-    #                        (sources['ycentroid'].data - ys)**2)
-    #
-    #         # If there is another star within 20 pixels, then don't keep this
-    #         if np.sum(dist < 30) > 1:
-    #             keepFlags[i] = False
-    #
-    #     # Cull the list of sources to only include "isolated" stars
-    #     if np.sum(keepFlags) > 0:
-    #         sources = sources[np.where(keepFlags)]
-    #     else:
-    #         print('No sources survided the neighbor test')
-    #         pdb.set_trace()
-    #
-    #     # Sort the stars by brightness
-    #     sortInds = (sources['flux'].argsort())[::-1]
-    #     sources = sources[sortInds]
-    #
-    #     def gauss2d(xy, base, height, center_x, center_y, width_x, width_y, rotation):
-    #         """Returns a gaussian function with the given parameters"""
-    #         # Parse the xy vector
-    #         x, y     = xy
-    #
-    #         # Ensure the parameters are floats
-    #         width_x = float(width_x)
-    #         width_y = float(width_y)
-    #
-    #         xp = x - center_x
-    #         yp = y - center_y
-    #
-    #         # Convert rotation to radians and apply the rotation matrix
-    #         # to center coordinates
-    #         rotation = np.deg2rad(rotation)
-    #         # center_x = center_x * np.cos(rotation) - center_y * np.sin(rotation)
-    #         # center_y = center_x * np.sin(rotation) + center_y * np.cos(rotation)
-    #
-    #         # Rotate the xy coordinates
-    #         xp1 = xp * np.cos(rotation) - yp * np.sin(rotation)
-    #         yp1 = xp * np.sin(rotation) + yp * np.cos(rotation)
-    #
-    #         # Compute the gaussian values
-    #         g = base + height*np.exp(-((xp1/width_x)**2 + (yp1/width_y)**2)/2.)
-    #         return g
-    #
-    #     # Fit 2D-gaussians to the 10 brightest, isolated stars
-    #     yy, xx = np.mgrid[0:41, 0:41]
-    #     sxList  = list()
-    #     syList  = list()
-    #     rotList = list()
-    #     for i, star in enumerate(sources):
-    #         # Fit a 2D gaussian to each star
-    #         # First cut out a square array centered on the star
-    #         xs, ys = star['xcentroid'], star['ycentroid']
-    #         lf = np.int(xs.round()) - 20
-    #         rt = lf + 41
-    #         bt = np.int(ys.round()) - 20
-    #         tp = bt + 41
-    #         starArr = self.arr[bt:tp,lf:rt]
-    #
-    #         # Package xy, zobs for fitting
-    #         xy   = np.array([xx.ravel(), yy.ravel()])
-    #         zobs = starArr.ravel()
-    #
-    #         # Guess the initial parameters and perform the fit
-    #         #              base, amp,   xc,   yc,   sx,  sy,  rot
-    #         arrMax      = np.max(zobs)
-    #         base1       = np.median(zobs)
-    #         guessParams = [base1,    arrMax,   21.0,   21.0,   2.0,  2.0,   0.0]
-    #         boundParams = ((-np.inf, 0.0,    -100.0, -100.0,   0.1,  0.1,   0.0),
-    #                        (+np.inf, np.inf, +100.0, +100.0,  10.0, 10.0, 360.0))
-    #         try:
-    #             fitParams, uncert_cov = opt.curve_fit(gauss2d, xy, zobs,
-    #                 p0=guessParams, bounds=boundParams)
-    #         except:
-    #             print("Star {0} could not be fit".format(i))
-    #
-    #         # Test goodness of fitCenter
-    #         fitX, fitY = fitParams[2:4]
-    #         fitCenter  = np.sqrt((21 - fitParams[2])**2 + (21 - fitParams[3])**2)
-    #         goodStar   = ((fitCenter < 3.0) and
-    #                       (fitParams[4] > 0.5) and (fitParams[4] < 3.0) and
-    #                       (fitParams[5] > 0.5) and (fitParams[5]) < 3.0)
-    #
-    #         if goodStar:
-    #             # Store the relevant parameters
-    #             sxList.append(fitParams[4])
-    #             syList.append(fitParams[5])
-    #             rotList.append(fitParams[6])
-    #
-    #     # Compute an average gaussian shape and return to user
-    #     PSFparams = (np.median(sxList),
-    #                  np.median(syList),
-    #                  np.arctan2(np.median(np.sin(rotList)),
-    #                             np.median(np.cos(rotList))))
-    #
-    #     return PSFparams
-
     def overscan_correction(self, overscanPos, sciencePos,
                             overscanPolyOrder = 3):
         """Fits a polynomial to the overscan column and subtracts and extended
@@ -1417,67 +1330,170 @@ class AstroImage(object):
         values from the header. If no such values exist, then return original
         array.
         """
-        # Scale the array
-        scaledArr = self.arr.copy()
-        if 'BSCALE' in self.header.keys():
-            if quantity.upper() == 'FLUX':
-                scaleConst1 = self.header['BSCALE']
+        # Test if the quantity value supplied is an acceptable format
+        if quantity.upper() not in ['FLUX', 'INTENSITY']:
+            raise ValueError("'quantity' must be either 'FLUX' or 'INTENSITY'")
 
-                # Check for uncertainty in BSCALE
-                if 'SBSCALE' in self.header.keys():
-                    sig_scaleConst1 = self.header['SBSCALE']
+        # ###############################
+        # This first section of code will determine if the array has already
+        # been scaled, and if it has not, then it will apply the scaling factors
+        # stored in the image header.
+        # ###############################
+        # Test if the array has already been scaled
+        if self._scaled_quantity is None:
+            # If the array has not been set to either FLUX or INTENSITY, then
+            # apply the scaling to the array and store the correct quantity
 
-            elif quantity.upper() == 'INTENSITY':
-                pixArea     = proj_plane_pixel_area(self.wcs)*(3600**2)
-                scaleConst1 = self.header['BSCALE']/pixArea
+            # Grab the scaling constants
+            if 'BSCALE' in self.header.keys():
+                if quantity.upper() == 'FLUX':
+                    scaleConst1 = self.header['BSCALE']
 
-                # Check for uncertainty in BSCALE
-                if 'SBSCALE' in self.header.keys():
-                    sig_scaleConst1 = self.header['SBSCALE']/pixArea
-        else:
-            scaleConst1 = 1
+                    # Check for uncertainty in BSCALE
+                    if 'SBSCALE' in self.header.keys():
+                        sig_scaleConst1 = self.header['SBSCALE']
 
-        if 'BZERO' in self.header.keys():
-            scaleConst0 = self.header['BZERO']
-        else:
-            scaleConst0 = 0
+                elif quantity.upper() == 'INTENSITY':
+                    pixArea     = proj_plane_pixel_area(self.wcs)*(3600**2)
+                    scaleConst1 = self.header['BSCALE']/pixArea
 
-        # Perform the actual scaling!
-        scaledArr = scaleConst1*self.arr.copy() + scaleConst0
-
-        # Apply scaling uncertainty if available
-        if hasattr(self, 'sigma'):
-            # If there is an uncertainty in the scaling factor, then propagate
-            # that into the uncertainty
-            if 'SBSCALE' in self.header.keys():
-                # Include the uncertainty in the scaling...
-                sigArr = np.abs(scaledArr)*np.sqrt((self.sigma/self.arr)**2
-                    + (sig_scaleConst1/scaleConst1)**2)
+                    # Check for uncertainty in BSCALE
+                    if 'SBSCALE' in self.header.keys():
+                        sig_scaleConst1 = self.header['SBSCALE']/pixArea
             else:
-                # Otherwise just scale up the uncertainty...
-                sigArr  = self.sigma.copy()
-                sigArr *= scaleConst1
+                scaleConst1 = 1
 
-        # Check if a copy of the image was requested
-        if copy:
-            outImg = self.copy()
-            outImg.arr = scaledArr
+            if 'BZERO' in self.header.keys():
+                scaleConst0 = self.header['BZERO']
+            else:
+                scaleConst0 = 0
 
-            # Try to store the sigArr array in the output image
-            try:
-                outImg.sigma = sigArr
-            except:
-                raise AttributeError('Could not store sigma array')
+            # Perform the actual scaling!
+            scaledArr = scaleConst1*self.arr.copy() + scaleConst0
 
-            return outImg
-        else:
-            self.arr = scaledArr
+            # Apply scaling uncertainty if available
+            if hasattr(self, 'sigma'):
+                # If there is an uncertainty in the scaling factor, then
+                # propagate that into the uncertainty
+                if 'SBSCALE' in self.header.keys():
+                    # Include the uncertainty in the scaling...
+                    sigArr = np.abs(scaledArr)*np.sqrt((self.sigma/self.arr)**2
+                        + (sig_scaleConst1/scaleConst1)**2)
+                else:
+                    # Otherwise just scale up the uncertainty...
+                    sigArr  = self.sigma.copy()
+                    sigArr *= scaleConst1
 
-            # Try to store the sigArr array in the original image
-            try:
-                self.sigma = sigArr
-            except:
-                raise AttributeError('Could not store sigma array')
+            # Check if a copy of the image was requested
+            if copy:
+                # Store the output array in a copy of this image
+                outImg = self.copy()
+                outImg.arr = scaledArr
+
+                # Set the _scaled_quantity property
+                outImg._scaled_quantity = quantity.upper()
+
+                # Try to store the sigArr array in the output image
+                try:
+                    outImg.sigma = sigArr
+                except:
+                    # If no sigArr variable was found, then simply skip that
+                    pass
+
+                return outImg
+            else:
+                # Set the _scaled_quantity property
+                self._scaled_quantity = quantity.upper()
+
+                # Store the output array
+                self.arr = scaledArr
+
+                # Try to store the sigArr array in the original image
+                try:
+                    self.sigma = sigArr
+                except:
+                    # If no sigArr variable was found, then simply skip that
+                    pass
+
+        # ###############################
+        # This second section of code will determine if the array has already
+        # been scaled, and if it has, then it will reverse the the scaling
+        # and restore the array and uncertainty to their original values.
+        # ###############################
+        elif self._scaled_quantity in ['FLUX', 'INTENSITY']:
+            # If the array HAS been set to either FLUX or INTENSITY, then return
+            # the array and uncertainty to their original values
+
+            # Grab the scaling constants
+            if 'BSCALE' in self.header.keys():
+                if self._scaled_quantity == 'FLUX':
+                    scaleConst1 = self.header['BSCALE']
+
+                    # Check for uncertainty in BSCALE
+                    if 'SBSCALE' in self.header.keys():
+                        sig_scaleConst1 = self.header['SBSCALE']
+
+                elif self._scaled_quantity == 'INTENSITY':
+                    pixArea     = proj_plane_pixel_area(self.wcs)*(3600**2)
+                    scaleConst1 = self.header['BSCALE']/pixArea
+
+                    # Check for uncertainty in BSCALE
+                    if 'SBSCALE' in self.header.keys():
+                        sig_scaleConst1 = self.header['SBSCALE']/pixArea
+            else:
+                scaleConst1 = 1
+
+            if 'BZERO' in self.header.keys():
+                scaleConst0 = self.header['BZERO']
+            else:
+                scaleConst0 = 0
+
+            # Perform the actual scaling!
+            unScaledArr = (self.arr.copy() - scaleConst0)/scaleConst1
+
+            # Apply scaling uncertainty if available
+            if hasattr(self, 'sigma'):
+                # If there is an uncertainty in the scaling factor, then
+                # propagate that into the uncertainty
+                if 'SBSCALE' in self.header.keys():
+                    # Include the uncertainty in the scaling...
+                    sigArr = np.abs(unScaledArr)*np.sqrt((self.sigma/self.arr)**2
+                        - (sig_scaleConst1/scaleConst1)**2)
+                else:
+                    # Otherwise just scale up the uncertainty...
+                    sigArr  = self.sigma.copy()
+                    sigArr /= scaleConst1
+
+            # Check if a copy of the image was requested
+            if copy:
+                # Store the output array in a copy of this image
+                outImg = self.copy()
+                outImg.arr = unScaledArr
+
+                # Set the _scaled_quantity property
+                outImg._scaled_quantity = quantity.upper()
+
+                # Try to store the sigArr array in the output image
+                try:
+                    outImg.sigma = sigArr
+                except:
+                    # If no sigArr variable was found, then simply skip that section
+                    pass
+
+                return outImg
+            else:
+                # Set the _scaled_quantity property to None
+                self._scaled_quantity = None
+
+                # Store the output array
+                self.arr = unScaledArr
+
+                # Try to store the sigArr array in the original image
+                try:
+                    self.sigma = sigArr
+                except:
+                    # If no sigArr variable was found, then simply skip that section
+                    pass
 
     def frebin(self, nx1, ny1, copy=False, total=False):
         """Rebins the image using a flux conservative method. If 'copy' is True,
@@ -1845,7 +1861,15 @@ class AstroImage(object):
 
     def pad(self, pad_width, mode='constant', **kwargs):
         '''A method for padding the arr and sigma attributes and also updating
-        the astrometry information in the header.
+        the astrometry information in the header. The 'pad_width' value in this
+        method is identical to the 'pad_width' value in the numpy.pad function.
+
+        pad_width : {sequence, array_like, int}
+            Number of values padded to the edges of each axis.
+            ((before_1, after_1), ... (before_N, after_N)) unique pad widths for
+            each axis. ((before, after),) yields same before and after pad for
+            each axis. (pad,) or int is a shortcut for before = after = pad
+            width for all axes.
         '''
         # Pad the primary array
         tmpArr   = np.pad(self.arr, pad_width, mode=mode, **kwargs)
