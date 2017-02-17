@@ -49,7 +49,7 @@ def convert_angle_to_covariance(sx, sy, theta):
     return sx1, sy1, rhoxy
 ###
 
-def get_img_offsets(imgList, subPixel=False, mode='wcs'):
+def get_img_offsets(imgList, subPixel=False, mode='wcs', satLimit=1e6):
     """A function to compute the offsets between images using either the WCS
     values contained in each image header or using cross-correlation techniques
     with an emphasis on star alignment for sub-pixel accuracy.
@@ -62,6 +62,9 @@ def get_img_offsets(imgList, subPixel=False, mode='wcs'):
                 aligning the images in imgList. 'wcs' uses the astrometry
                 in the header while 'cross_correlate' selects a reference
                 image and computes image offsets using cross-correlation.
+    satLimit -- this constant tells the program wat the maximum acceptable value
+                is to consider a star unsaturated when selecting stars for
+                cross-correlation PSF offset matching.
     """
     # Catch the case where a list of images was not passed
     if not isinstance(imgList, list):
@@ -110,7 +113,7 @@ def get_img_offsets(imgList, subPixel=False, mode='wcs'):
         # mean of sx, sy the best-fit Gaussian eigen-values.
         PSFsize = []
         for img in imgList:
-            PSFparams, _ = img.get_psf()
+            PSFparams, _ = img.get_psf(satLimit=satLimit)
             PSFsize.append(np.sqrt(PSFparams['sx']*PSFparams['sy']))
 
         # Use the first image in the list as the "reference image"
@@ -136,7 +139,8 @@ def get_img_offsets(imgList, subPixel=False, mode='wcs'):
                 # Compute actual image offset between reference and image
                 dx, dy = refImg.get_img_offsets(img,
                     mode='cross_correlate',
-                    subPixel=subPixel)
+                    subPixel=subPixel,
+                    satLimit=satLimit)
 
                 # Append cross_correlation values for non-reference image
                 shapeList.append(img.arr.shape)
@@ -1106,7 +1110,7 @@ def inpaint_nans(arr, mask=None):
     # Return the actual AstroImage instance
     return repairedArr
 
-def build_pol_maps(Qimg, Uimg):
+def build_pol_maps(Qimg, Uimg, ricean_correct=True):
     '''This function will build polarization percentage and position angle maps
     from the input Qimg and Uimg AstroImage instances. If the DEL_PA and
     S_DEL_PA header keywords are set (and match), then the position angle maps
@@ -1130,18 +1134,21 @@ def build_pol_maps(Qimg, Uimg):
         Pmap.arr[badInds]   = 0.0
         Pmap.sigma[badInds] = 0.0
 
-    # Apply the Ricean correction
-    # First compute a temporary "de-baised" array
-    tmpArr = Pmap.arr**2 - Pmap.sigma**2
+    if ricean_correct == True:
+        # Apply the Ricean correction
+        # First compute a temporary "de-baised" array
+        tmpArr = Pmap.arr**2 - Pmap.sigma**2
 
-    # Check if any of the debiased values are less than zero
-    zeroInds = np.where(tmpArr < 0)
-    if len(zeroInds[0]) > 0:
-        # Set all insignificant detections to zero
-        tmpArr[zeroInds] = 0
+        # Check if any of the debiased values are less than zero
+        zeroInds = np.where(tmpArr < 0)
+        if len(zeroInds[0]) > 0:
+            # Set all insignificant detections to zero
+            tmpArr[zeroInds] = 0
 
-    # Now we can safely take the sqare root of the debiased values
-    Pmap.arr = np.sqrt(tmpArr)
+        # Now we can safely take the sqare root of the debiased values
+        Pmap.arr = np.sqrt(tmpArr)
+    else:
+        pass
 
     # Parse the header information for building the PA map
     # Check for a DELPA keyword in the headers
