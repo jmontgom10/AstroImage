@@ -975,10 +975,10 @@ class AstroImage(object):
         """
         # Check if it has a celestial coordinate system
         if hasattr(self, 'wcs'):
-            if self.wcs.has_cd():
+            if self.wcs.wcs.has_cd():
                 # Grab the cd matrix
                 cd = self.wcs.wcs.cd
-            elif self.wcs.has_pc():
+            elif self.wcs.wcs.has_pc():
                 # Convert the pc matrix into a cd matrix
                 cd = self.wcs.wcs.cdelt*self.wcs.wcs.pc
 
@@ -1014,7 +1014,7 @@ class AstroImage(object):
         else:
             return None
 
-    def get_sources(self, satLimit=16000, crowdThresh=0, edgeThresh=0):
+    def get_sources(self, satLimit=1e6, crowdThresh=0, edgeThresh=0):
         """This method simply uses the daofind algorithm to extract source
         positions. It will also test for saturation using a default value of
         16000 ADU. It will also optionally test for crowded stars and omit them.
@@ -1154,7 +1154,7 @@ class AstroImage(object):
 
         return xs, ys
 
-    def get_psf(self):
+    def get_psf(self, satLimit=1e6):
         """This method analyses the stars in the image and returns the average
         PSF properties of the image. The default mode fits 2D-gaussians to the
         brightest, isolated stars in the image. Future versions could use there
@@ -1166,6 +1166,7 @@ class AstroImage(object):
         # Find the isolated sources for gaussian fitting
         crowdThresh = np.sqrt(2)*0.5*starPatch
         xsrcs, ysrcs = self.get_sources(
+            satLimit = satLimit,
             crowdThresh = crowdThresh,
             edgeThresh = starPatch + 1)
 
@@ -1836,9 +1837,11 @@ class AstroImage(object):
             if hasattr(self, 'header'):
                 outImg.header  = outHead
 
+            # Update the binning attribute to match the new array
             outImg.binning = (outImg.binning[0]/xratio,
                               outImg.binning[1]/yratio)
 
+            # Update the wcs attribute to match the new header data
             if outWCS.has_celestial: outImg.wcs = outWCS
 
             # Return the updated image object
@@ -1853,9 +1856,11 @@ class AstroImage(object):
             if hasattr(self, 'header'):
                 self.header  = outHead
 
+            # Update the binning attribute to match the new array
             self.binning = (self.binning[0]/xratio,
                             self.binning[1]/yratio)
 
+            # Update the wcs attribute to match the new header data
             if outWCS.has_celestial: self.wcs = outWCS
 
 
@@ -2154,6 +2159,58 @@ class AstroImage(object):
                 # Make the self.wcs attribute is also updated
                 self.wcs = WCS(self.header)
 
+    def rotate(self, angle, reshape=True, order=3, mode='constant', cval=0.0,
+        prefilter=True, copy=True):
+        """This is a convenience method for accessing the scipy rotate
+        interpolator. Future versions of this method may apply a flux
+        conservative method (such as that apparently employed by HASTROM in
+        the IDL astrolib).
+        """
+        # Apply the rotation to the array and sigma arrays
+        outArr = ndimage.interpolation.rotate(self.arr, angle,
+            reshape=reshape, order=order, mode=mode, cval=cval,
+            prefilter=prefilter)
+
+        # I have not yet sorted out how to properly apply rotation to the
+        # WCS information in the header
+        warnings.warn('The WCS of this image has not been rotated', Warning)
+
+        # If the shape of the output array has changed, then update the header
+        ny, nx = outArr.shape
+        if (ny, nx) != self.arr.shape:
+            outHead = self.header.copy()
+            outHead['NAXIS1'] = nx
+            outHead['NAXIS2'] = ny
+
+        # Rotate the uncertainty image if it exists (THIS IS PROBABLY NOT THE
+        # PROPER WAY TO HANDLE ROTATION)
+        hasSig = hasattr(self, 'sigma')
+        if hasSig:
+            outSig = ndimage.interpolation.rotate(self.sigma, angle,
+                reshape=reshape, order=order, mode=mode, cval=cval,
+                prefilter=prefilter)
+
+        # Either copy and return the image, or store it in "self"
+        if copy == True:
+            outImg = self.copy()
+            outImg.arr    = outArr
+
+            if hasSig:
+                outImg.sigma  = outSig
+
+            outImg.header = outHead
+            outImg.wcs    = WCS(outHead)
+
+            return outImg
+        else:
+            self.arr    = outarr
+
+            if hasSig:
+                self.sigma  = outSig
+
+            self.header = outHead
+            self.wcs    = WCS(outHead)
+
     def in_image(self, coords, edge=0):
         """A method to test which (RA, Dec) coordinates lie within the image.
 
@@ -2233,7 +2290,7 @@ class AstroImage(object):
         if hasattr(self, 'wcs'):
             del self.wcs
 
-    def get_img_offsets(self, img, subPixel=False, mode='wcs'):
+    def get_img_offsets(self, img, subPixel=False, mode='wcs', satLimit = 1e6):
         """A method to compute the displacement offsets between two the "self"
         AstroImage and the "img" AstroImage.
         """
@@ -2303,9 +2360,6 @@ class AstroImage(object):
                     padY    = ny2 - ny1
                     newSelf.pad(((0,padY),(0,0)), mode='constant')
                     del padY
-
-            # Use this value to test for pixel saturation
-            satLimit = 300000
 
             # Define kernal shape for an median filtering needed
             binX, binY = self.binning
@@ -3012,7 +3066,7 @@ class AstroImage(object):
         # Return the graphics objects to the user
         return (fig, axes, axIm)
 
-    def oplot_sources(self, satLimit=16000, crowdThresh=0.0,
+    def oplot_sources(self, satLimit=1e6, crowdThresh=0.0,
         s=100, edgecolor='red', facecolor='none', **kwargs):
         """A method to overplot sources using the pyplot.scatter() method and its
         associated keywords
