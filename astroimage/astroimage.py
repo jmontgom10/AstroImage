@@ -968,6 +968,12 @@ class AstroImage(object):
         """
         return proj_plane_pixel_scales(self.wcs)
 
+    def get_pixel_area(self):
+        """This is a convenience method for computing the area of the pixels in
+        using the WCS stored for this image
+        """
+        return proj_plane_pixel_area(self.wcs)
+
     def get_rotation(self):
         """This method will check if the image header has a celestial coordinate
         system and returns the rotation angle between the image pixels and the
