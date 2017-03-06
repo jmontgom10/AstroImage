@@ -1110,48 +1110,187 @@ def inpaint_nans(arr, mask=None):
     # Return the actual AstroImage instance
     return repairedArr
 
-def build_pol_maps(Qimg, Uimg, ricean_correct=True):
+def build_pol_maps(Qimg, Uimg, minimum_SNR=1.0, p_estimator='naive', pa_estimator='naive'):
     '''This function will build polarization percentage and position angle maps
     from the input Qimg and Uimg AstroImage instances. If the DEL_PA and
     S_DEL_PA header keywords are set (and match), then the position angle maps
+
+    parameters:
+    Qimg         -- an AstroImage instance of the stokes Q parameter
+    Uimg         -- an AstroImage instance of the stokes U parameter
+    minimum_SNR  -- a float which determins the minimum SNR value required
+                    before rejecting the null hypothesis, "this source is
+                    unpolarized"
+    p_estimator  -- ['naive', 'wardle_kronberg', 'maier_piecewise',
+                    'modified_asymptotic']
+                    this specifies which estimator of the polarization will be
+                    used. The default 'naive' estimator is a direct computation
+                    of the polarization percentage while the other estimators
+                    make SOME kind of an attempt to correct for the biasing
+                    effects.
+    pa_estimator -- ['naive', 'max_likelihood_1d', 'max_likelihood_2d']
     '''
     # Check if the U and Q images are the same shape
     if Qimg.arr.shape != Uimg.arr.shape:
         raise ValueError('The U and Q images must be the same shape')
 
-    # Quickly build the P map
-    Pmap  = np.sqrt(Qimg**2 + Uimg**2)
+    # P estimation
+    ############################################################################
+    # Estimate of the polarization percentage using the requested method.
+    ############################################################################
+    if p_estimator.upper() == 'NAIVE':
+        #####
+        # Compute a raw estimation of the polarization map
+        #####
+        Pmap  = np.sqrt(Qimg**2 + Uimg**2)
 
-    # Catch any stupid values (nan, inf, etc...)
-    badVals = np.logical_not(
-              np.logical_and(
-              np.isfinite(Pmap.arr),
-              np.isfinite(Pmap.sigma)))
+        # The sigma which determines the Rice distribution properties is the
+        # width of the Stokes Parameter distribution, so we will simply compute
+        # an average uncertainty and assign it to the Pmap AstroImage
+        Pmap.sigma = 0.5*(Qimg.sigma + Uimg.sigma)
 
-    # Replace the stupid values with zeros
-    if np.sum(badVals) > 0:
-        badInds             = np.where(badVals)
-        Pmap.arr[badInds]   = 0.0
-        Pmap.sigma[badInds] = 0.0
+    elif p_estimator.upper() == 'WARDLE_KRONBERG':
+        #####
+        # Handle the ricean correction using Wardle and Kronberg (1974) method
+        #####
+        # Quickly build the P map
+        Pmap = np.sqrt(Qimg**2 + Uimg**2)
 
-    if ricean_correct == True:
-        # Apply the Ricean correction
-        # First compute a temporary "de-baised" array
-        tmpArr = Pmap.arr**2 - Pmap.sigma**2
+        # Apply the bias correction
+        # The sigma which determines the Rice distribution properties is the
+        # width of the Stokes Parameter distribution, so we will simply compute
+        # an average uncertainty and assign it to the Pmap AstroImage
+        smap = 0.5*(Qimg.sigma + Uimg.sigma)
 
-        # Check if any of the debiased values are less than zero
-        zeroInds = np.where(tmpArr < 0)
-        if len(zeroInds[0]) > 0:
+        # # This is the old correction we were using before I reread the Wardle
+        # # and Kronberg paper... it is even MORE aggresive than the original
+        # # recomendation
+        # smap = Pmap.sigma
+
+        # Catch any stupid values (nan, inf, etc...)
+        badVals = np.logical_not(np.logical_and(
+            np.isfinite(Pmap.arr),
+            np.isfinite(smap)))
+
+        # Replace the stupid values with zeros
+        if np.sum(badVals) > 0:
+            badInds           = np.where(badVals)
+            Pmap.arr[badInds] = 0.0
+            smap[badInds]     = 1.0
+
+        # Check which measurements don't match the minimum SNR
+        zeroVals = Pmap.arr/smap <= minimum_SNR
+        numZero  = np.sum(zeroVals.astype(int))
+        if numZero > 0:
+            # Make sure the square-root does not produce NaNs
+            zeroInds           = np.where(zeroVals)
+            Pmap.arr[zeroInds] = 2*smap[zeroInds]
+
+        # Compute the "debiased" polarization map
+        tmpPmap =  Pmap.arr*np.sqrt(1.0 - (smap/Pmap.arr)**2)
+
+        if numZero > 0:
             # Set all insignificant detections to zero
-            tmpArr[zeroInds] = 0
+            tmpPmap[zeroInds] = 0.0
 
         # Now we can safely take the sqare root of the debiased values
-        Pmap.arr = np.sqrt(tmpArr)
-    else:
-        pass
+        Pmap.arr   = tmpPmap
+        Pmap.sigma = smap
 
+    elif p_estimator.upper() == 'MAIER_PIECEWISE':
+        # The following is taken from Maier et al. (2014) s = sigma_q == sigma_u
+        # and the quantity of interest is the SNR value  p = P/s
+
+        # Compute the raw polarization and uncertainty
+        Pmap = np.sqrt(Qimg.arr**2 + Uimg.arr**2)
+        smap = 0.5*(Qimg.sigma + Uimg.sigma)
+
+        # Compute the SNR map (called "p" in most papers)
+        pmap = Pmap/smap
+
+        # Find those values which don't meet the minimum_SNR requirement
+        zeroInds = np.where(Pmap/smap <= minimum_SNR)
+        if len(zeroInds[0]) > 0:
+            # Set all insignificant detections to zero
+            pmap[zeroInds] = 0.0
+
+
+        # Make a copy of the pmap for modification
+        p1map = pmap.copy()
+
+        # Classify each pixel in the SNR map to be computed using the least
+        # biased estimator, as described in Maier et al. (2014)
+        classRanges = [0, np.sqrt(2), 1.70, 2.23, 2.83, np.inf]
+        for iClass in range(len(classRanges) - 1):
+            # Define the estimator for this class
+            if iClass == 0:
+                def p1(p):
+                    return 0
+
+            elif iClass == 1:
+                def p1(p):
+                    pshift = p - np.sqrt(2)
+                    return pshift**0.4542 + pshift**0.4537 + pshift/4.0
+
+            elif iClass == 2:
+                def p1(p):
+                    return 22*(p**(0.11)) - 22.076
+
+            elif iClass == 3:
+                def p1(p):
+                    return 1.8*(p**(0.76)) - 1.328
+
+            elif iClass == 4:
+                def p1(p):
+                    return (p**2 - 1.0)**(0.5)
+
+            # Grab the limiting SNRs for this case
+            SNRmin, SNRmax = classRanges[iClass], classRanges[iClass + 1]
+
+            # Locate the pixels where
+            classPix = np.logical_and(pmap >= SNRmin, pmap < SNRmax)
+
+            # If some of the pixels fall into this class, then recompute the
+            # corrected pmap1 value
+            if np.sum(classPix) > 0:
+                classInds        = np.where(classPix)
+                p1map[classInds] = p1(pmap[classInds])
+
+        # Now that each class of SNR values has been evaluated, scale up the
+        # estimated SNR values by their own respective sigma value
+        Pmap       = np.sqrt(Qimg**2 + Uimg**2)
+        Pmap.arr   = p1map*smap
+        Pmap.sigma = smap
+
+    elif p_estimator.upper() == 'MODIFIED_ASYMPTOTIC':
+        # The following is taken from Plaszczynski et al. (2015). This makes the
+        # additional assumption/simplicication that (s = sigma_q == sigma_u).
+
+        # Compute the raw polarization and uncertainty
+        Pmap = np.sqrt(Qimg.arr**2 + Uimg.arr**2)
+        smap = 0.5*(Qimg.sigma + Uimg.sigma)
+
+        # Apply the asymptotic debiasing effect.
+        P1map = Pmap - (smap**2 * ((1 - np.exp(-(Pmap/smap)**2)/(2*Pmap))))
+
+        # Locate any
+        zeroInds = np.where(Pmap/smap <= minimum_SNR)
+        if len(zeroInds[0]) > 0:
+            # Set all insignificant detections to zero
+            P1map[zeroInds] = 0.0
+
+        # Now compute an AstroImage object and store the corrected P1map
+        Pmap       = np.sqrt(Qimg**2 + Uimg**2)
+        Pmap.arr   = P1map
+        Pmap.sigma = smap
+
+    else:
+        raise ValueError("Did not recognize 'p_estimator' keyword value")
+
+    ############################################################################
     # Parse the header information for building the PA map
-    # Check for a DELPA keyword in the headers
+    ############################################################################
+    # Check for a DELTAPA keyword in the headers
     Qhas_DPA = ('DELTAPA' in Qimg.header.keys())
     Uhas_DPA = ('DELTAPA' in Uimg.header.keys())
 
@@ -1162,8 +1301,7 @@ def build_pol_maps(Qimg, Uimg, ricean_correct=True):
         if QDPA == UDPA:
             deltaPA = QDPA
         else:
-            print('DELTAPA values do not match.')
-            pdb.set_trace()
+            raise ValueError('The DELTAPA values in U and Q do not match.')
     else:
         deltaPA = 0.0
 
@@ -1177,8 +1315,7 @@ def build_pol_maps(Qimg, Uimg, ricean_correct=True):
         if Q_s_DPA == U_s_DPA:
             s_DPA = Q_s_DPA
         else:
-            print('S_DPA values do not match.')
-            pdb.set_trace()
+            raise ValueError('The S_DPA values in U and Q do not match.')
     else:
         s_DPA = 0.0
 
@@ -1193,11 +1330,23 @@ def build_pol_maps(Qimg, Uimg, ricean_correct=True):
     else:
         raise ValueError('The astrometry in U and Q do not seem to match.')
 
-    # Build the PA map and add the uncertaies in quadrature
-    PAmap = (np.rad2deg(0.5*np.arctan2(Uimg, Qimg)) + deltaPA + 720.0) % 180.0
-    if s_DPA > 0.0:
-        PAmap.sigma = np.sqrt(PAmap.sigma**2 + s_DPA**2)
+    # PA estimation
+    ############################################################################
+    # Estimate of the polarization position angle using the requested method.
+    ############################################################################
+    if pa_estimator.upper() == 'NAIVE':
+        # Build the PA map and add the uncertaies in quadrature
+        PAmap = (np.rad2deg(0.5*np.arctan2(Uimg, Qimg)) + deltaPA + 720.0) % 180.0
+        if s_DPA > 0.0:
+            PAmap.sigma = np.sqrt(PAmap.sigma**2 + s_DPA**2)
+    elif pa_estimator.upper() == 'MAX_LIKELIHOOD_1D':
+        raise NotImplementedError()
+    elif pa_estimater.upper() == 'MAX_LIKELIHOOD_2D':
+        raise NotImplementedError()
+    else:
+        raise ValueError("Did not recognize 'pa_estimator' keyword value")
 
+    # Now that everything has been computed, simply return the Pmap, PAmap tuple
     return Pmap, PAmap
 
 import matplotlib.pyplot as plt
