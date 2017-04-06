@@ -547,6 +547,9 @@ class RawImage(BaseImage):
         # Catch the type of image being processed.
         selfType = type(self)
 
+        # TODO: modularize this method so that each step "subtcractBias", etc...
+        # is performed by its own helper method.
+
         # By default, do NOTHING (set with these flags)
         subtractBias, subtractDark, divideFlat = False, False, False
         if selfType is RawBias:
@@ -585,11 +588,20 @@ class RawImage(BaseImage):
             else:
                 raise TypeError('`dark` must be a MasterDark image')
 
-        # TODO: Add uncertainty for RawScience images at this point
-        #
-        # 1) Compute poisson uncertainty.
-        # 2) Include poisson uncertainty in new output uncertainty
-        # 3) Proceed to divide by MasterFlat, which has its own uncertainty
+        # Check if we should be worried about Poisson uncertainty at this point,
+        # now that the bias and dark current have been subtracted.
+        if issubclass(type(self), RawScience):
+            # Gheck if a gain has been provided
+            if self.gain is None:
+                raise ValueError('Image has no `gain` attribute, which is required for proper processing.')
+
+            # Compute the poisson uncertainty
+            poissonUncert = outArr/self.gain
+
+            # Include the poisson uncertainty in the output uncertainty
+            outUncert = np.sqrt(
+                outUncert**2 + poissonUncert
+            )
 
         if flat is not None and divideFlat:
             if type(flat) is MasterFlat:
