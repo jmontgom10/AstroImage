@@ -33,7 +33,7 @@ import astroimage as ai
 # @with_setup(my_setup_function, my_teardown_function)
 
 # Read in an ACTUAL image of M104
-realImg1 = ai.AstroImage.read('.\\tests\\M104_V_I.fits')
+realImg1 = ai.ReducedScience.read('.\\tests\\M104_V_I.fits')
 
 # TODO: build basic alignment tests for WCS
 

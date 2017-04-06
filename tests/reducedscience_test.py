@@ -33,7 +33,7 @@ import astroimage as ai
 # @with_setup(my_setup_function, my_teardown_function)
 
 # Read in an ACTUAL image of M104
-realImg1 = ai.AstroImage.read('.\\tests\\M104_V_I.fits')
+realImg1 = ai.ReducedScience.read('.\\tests\\M104_V_I.fits')
 
 # Build a synthenic array of stars
 ny, nx    = 1000, 1000
@@ -62,8 +62,8 @@ for f1, sx, sy in zip(f0, sx0, sy0):
 #####
 
 # def test_get_sources():
-#     # Build an AstroImage instance from the initalized array
-#     img1 = ai.AstroImage(arr1)
+#     # Build an ReducedScience instance from the initalized array
+#     img1 = ai.ReducedScience(arr1)
 #
 #     # Use the get_sources method to retrieve the source positions
 #     sx1, sy1 = img1.get_sources()
@@ -90,8 +90,8 @@ for f1, sx, sy in zip(f0, sx0, sy0):
 #     assert (sep2d < 0.5*u.arcsec).all()
 #
 # def test_get_psf():
-#     # Build an AstroImage instance from the initalized array
-#     img1 = ai.AstroImage(arr1)
+#     # Build an ReducedScience instance from the initalized array
+#     img1 = ai.ReducedScience(arr1)
 #
 #     # Attempt to recover the PSF
 #     PSFstamp, PSFparams = img1.get_psf()
@@ -132,8 +132,8 @@ def test_shift():
     testArr = np.zeros((9,9))
     testArr[3:6,3:6] = 1.0
 
-    # Build the test AstroImage
-    testImg1 = ai.AstroImage(testArr)
+    # Build the test ReducedScience
+    testImg1 = ai.ReducedScience(testArr)
 
     # Compute the total flux of the test image
     totalFlux = testImg1.data.sum()
@@ -183,8 +183,8 @@ def test_gradient():
     testArr = np.zeros((9,9))
     testArr[3:6,3:6] = 1.0
 
-    # Build the test AstroImage
-    testImg1 = ai.AstroImage(testArr)
+    # Build the test ReducedScience
+    testImg1 = ai.ReducedScience(testArr)
 
     # Compute the image gradient with the sobel operator
     Gx, Gy = testImg1.gradient(kernel='sobel')
@@ -248,7 +248,7 @@ def test_in_image():
 
 def test_correct_airmass():
     # Build a test image
-    img1 = ai.AstroImage(arr1, uncertainty=np.sqrt(arr1), properties={'airmass': 1.5})
+    img1 = ai.ReducedScience(arr1, uncertainty=np.sqrt(arr1), properties={'airmass': 1.5})
 
     # Apply an airmass correction
     kappa = 0.4
@@ -268,6 +268,6 @@ def test_correct_airmass():
     # Assert that the airmass in the properties and header of the output are 0.0
     assert_equal(img2.airmass, 0)
 
-    if 'AIRMASS' in ai.AstroImage.headerKeywordDict:
-        airmassKey = ai.AstroImage.headerKeywordDict['AIRMASS']
+    if 'AIRMASS' in ai.ReducedScience.headerKeywordDict:
+        airmassKey = ai.ReducedScience.headerKeywordDict['AIRMASS']
         assert_equal(img2.header[airmassKey], 0)

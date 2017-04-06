@@ -69,7 +69,7 @@ def test_process_image_parsing_bad_bias():
     # method raises an error as it should
 
     # Build the basic images
-    rawSci  = ai.RawScience(arr1, properties={'obsType':'OBJECT'})
+    rawSci  = ai.RawScience(arr1, properties={'obsType':'OBJECT', 'gain': 3.2})
     rawBias = ai.RawBias(arr1, properties={'obsType':'BIAS'})
 
     # Attempt to process the science image
@@ -83,7 +83,7 @@ def test_process_image_parsing_bad_dark():
     # method raises an error as it should
 
     # Build the basic images
-    rawSci  = ai.RawScience(arr1, properties={'obsType':'OBJECT'})
+    rawSci  = ai.RawScience(arr1, properties={'obsType':'OBJECT', 'gain': 3.2})
     rawDark = ai.RawDark(arr1, properties={'obsType':'DARK'})
     masterBias = ai.MasterBias(arr1, uncertainty=sig1, properties={'obsType':'BIAS'})
 
@@ -99,7 +99,7 @@ def test_process_image_parsing_bad_flat():
     # method raises an error as it should
 
     # Build the basic images
-    rawSci  = ai.RawScience(arr1, properties={'obsType':'OBJECT'})
+    rawSci  = ai.RawScience(arr1, properties={'obsType':'OBJECT', 'gain': 3.2})
     rawFlat = ai.RawFlat(arr1, properties={'obsType':'FLAT'})
     masterBias = ai.MasterBias(arr1, uncertainty=sig1, properties={'obsType':'BIAS'})
     masterDark = ai.MasterDark(arr1, uncertainty=sig1, properties={'obsType':'DARK'})
@@ -116,7 +116,7 @@ def test_process_image_with_good_inputs():
     # method raises an error as it should
 
     # Build the basic images
-    rawSci     = ai.RawScience(arr1, properties={'expTime': 3.0, 'obsType':'OBJECT'})
+    rawSci     = ai.RawScience(arr1, properties={'expTime': 3.0, 'obsType':'OBJECT', 'gain': 3.2})
     masterBias = ai.MasterBias(arr1, uncertainty=sig1, properties={'obsType':'BIAS'})
     masterDark = ai.MasterDark(arr1, uncertainty=sig1, properties={'obsType':'DARK'})
     masterFlat = ai.MasterFlat(arr1, uncertainty=sig1, properties={'obsType':'FLAT'})
