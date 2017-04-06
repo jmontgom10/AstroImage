@@ -7,7 +7,7 @@ import astropy.units as u
 
 class ImageNumericsMixin(object):
     """
-    A mixin class to handle common numerical methods for AstroImage classes
+    A mixin class to handle common numerical methods for ReducedScience class
     """
 
     ##################################

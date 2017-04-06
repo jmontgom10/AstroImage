@@ -16,6 +16,7 @@ from astropy.nddata import NDDataArray
 # AstroImage imports
 from .baseimage import BaseImage, ClassProperty
 from .reducedimages import ReducedImage, MasterBias, MasterDark, MasterFlat
+from .reducedscience import ReducedScience
 
 # Define which functions, classes, objects, etc... will be imported via the command
 # >>> from .rawimages import *
@@ -620,6 +621,8 @@ class RawImage(BaseImage):
         # Ensure the NAXIS keywords are correct
         outHeader['NAXIS1'] = outArr.shape[1]
         outHeader['NAXIS2'] = outArr.shape[0]
+
+        # TODO: determine which TYPE of output should be written
 
         # Initalize a blank instance for returning to the user
         outImage = ReducedImage(

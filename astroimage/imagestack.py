@@ -17,7 +17,7 @@ from astropy.nddata import NDDataArray, StdDevUncertainty
 from .baseimage import BaseImage
 from .rawimages import RawBias, RawDark, RawFlat, RawScience
 from .reducedimages import MasterBias, MasterDark, MasterFlat
-from .astroimage import AstroImage
+from .reducedscience import ReducedScience
 from .astrometrysolver import AstrometrySolver
 
 # Define which functions, classes, objects, etc... will be imported via the command
@@ -51,9 +51,9 @@ class ImagePairOffsetGetter(object):
         """
         Constructs the ImagePairOffsetGetter from two supplied images.
         """
-        if not (issubclass(type(image1), AstroImage)
-            and(issubclass(type(image2), AstroImage))):
-            raise TypeError('Both images must be `AstroImage` instances for proper alignment')
+        if not (issubclass(type(image1), ReducedScience)
+            and(issubclass(type(image2), ReducedScience))):
+            raise TypeError('Both images must be `ReducedScience` instances for proper alignment')
 
         # Store two copies of the image data arrays... the rest doesn't matter!
         self.image1 = image1.copy()
@@ -415,8 +415,8 @@ class ImagePairOffsetGetter(object):
 
         # Construct a NEW ImagePair instance from these two mosaics
         mosaicPair = ImagePairOffsetGetter(
-            AstroImage(cutoutMosaic1),
-            AstroImage(cutoutMosaic2)
+            ReducedScience(cutoutMosaic1),
+            ReducedScience(cutoutMosaic2)
         )
 
         # Replace any suprious values with local median values
@@ -670,9 +670,9 @@ class ImageStack(object):
 
     def get_wcs_offsets(self, subPixel=False):
         """
-        Computes the relative offsets between `AstroImage` in the ImageStack
-        using the WCS solutions provided in each image. If ANY of the images do
-        not have a WCS solution, then this method returns an error.
+        Computes the relative offsets between `ReducedScience` images in the
+        ImageStack using the WCS solutions provided in each image. If ANY of the
+        images do not have a WCS solution, then this method returns an error.
 
         Parameters
         ----------
@@ -691,14 +691,14 @@ class ImageStack(object):
         if self.numberOfImages < 1:
             raise ValueError('Silly rabbit, you need some images to align!')
 
-        # Check that the image list is storing `AstroImage` type images.
-        if self.imageType is not AstroImage:
-            raise TypeError('WCS offsets can only be computed for `AstroImage` type images')
+        # Check that the image list is storing `ReducedScience` type images.
+        if issubclass(self.imageType, ReducedScience):
+            raise TypeError('WCS offsets can only be computed for `ReducedScience` type images')
 
         # Check that all the stored images have WCS
         imagesHaveWCS = [img.has_wcs for img in self.imageList]
         if not all(imagesHaveWCS):
-            raise ValueError('All `AstroImage` instances must have WCS solutions')
+            raise ValueError('All `ReducedScience` instances must have WCS solutions')
 
         # Grab the WCS of the first image
         refWCS = self.imageList[0].wcs
@@ -1261,11 +1261,10 @@ class ImageStack(object):
         # so simply return None for the uncertainty
         if numWithUncert > 0 and numWithUncert < nz:
             # Issue a warning so that the user knows this is happening.
-            warnings.warn("""
-            Not all images in the ImageStack have associated uncertainties.
-            Estimating uncertainty from data variance. This will overestimate
-            the uncertainty in stellar pixels.
-            """)
+            warnings.warn(
+"""Not all images in the ImageStack have associated uncertainties:
+estimating uncertainty from data variance. This will overestimate
+the uncertainty in stellar pixels.""")
 
         if (numWithUncert != nz):
             outUncert = None
@@ -1431,9 +1430,6 @@ class ImageStack(object):
         """
         Computes the bad pixels to be masked in the median filtered mean.
 
-        This version accepts keywords that pertain to the masking of stars and
-        hence should ONLY be applied to AstroImage instances.
-
         Parameters
         ----------
         dataSubStack : numpy.ma.ndarray
@@ -1553,7 +1549,7 @@ class ImageStack(object):
             maskedUncertainty = maskedData.std(axis=0).data
         else:
             # If an array of uncertainties was provided, then we can proceed by
-            # propogating those uncertainties.
+            # propagating those uncertainties.
             maskedUncertainty = self._propagate_masked_uncertainty(
                 uncertainty,
                 maskedData.mask
@@ -1614,13 +1610,13 @@ class ImageStack(object):
 
         outUncert : numpy.ndarray
             The uncertainty in that mean. If the images in the stack have
-            associated uncertainties, then this will be a propogated
+            associated uncertainties, then this will be a propagated
             uncertainty. If they do not have associated uncertainties, then this
             will be estimated from the variance in the stack pixel values.
 
             !WARNING! - Estimating uncertainty from the pixel variance will lead
             to unreasonably high uncertainties in stellar PSFs. Thus, it is
-            much better to load the AstroImage instances with an estimated
+            much better to load the ReducedScience instances with an estimated
             detector gain so that a Poisson uncertainty can be used.
         """
         # Extract the number of images (nz) and the shape of the images (ny, nx)
@@ -1679,7 +1675,7 @@ class ImageStack(object):
 
     def _parse_stars_according_to_image(self, starClipSigma=40.0):
         """
-        Builds star mask for AstroImages and turns of star masking for others
+        Builds star mask for ReducedScience and turns of star masking for others
 
         Parameters
         ----------
@@ -1701,7 +1697,7 @@ class ImageStack(object):
             set to 0 if no star clipping sholud happen (i.e. this image does
             not contain stars)
         """
-        if self.imageType is AstroImage:
+        if issubclass(self.imageType, ReducedScience):
             # Check if all the images were corrected to Airmass 0.0
             if np.sum([img.airmass for img in self.imageList]) > 0:
                 raise ValueError('All images in the imageList must be corrected to airmass=0.0 before combining')
@@ -1719,8 +1715,8 @@ class ImageStack(object):
         """
         Places mean and uncertainty into an image object and solves astrometry
 
-        Only attempts astrometric solution if the output image was an AstroImage
-        instance.
+        Only attempts astrometric solution if the output image was an
+        ReducedScience instance.
 
         Parameters
         ----------
@@ -1736,15 +1732,15 @@ class ImageStack(object):
             An image instance containing the mean and uncertainty and
             astrometric solution if possible.
         """
-        # Select the type of output image to be built
+        # Select the type of output image to be built on the basis of the image
+        # obsType.
         outImageClassDict = {
-            RawBias: MasterBias,
-            RawDark: MasterDark,
-            RawFlat: MasterFlat,
-            RawScience: AstroImage,
-            AstroImage: AstroImage
+            'BIAS': MasterBias,
+            'DARK': MasterDark,
+            'FLAT': MasterFlat,
+            'OBJECT': ReducedScience
         }
-        outImageClass = outImageClassDict[self.imageType]
+        outImageClass = outImageClassDict[self.imageList[0].obsType]
 
         # Return that data to the user in a single AstroImage instance
         outImg = outImageClass(
@@ -1754,8 +1750,8 @@ class ImageStack(object):
             properties={'unit': self.imageList[0].unit}
         )
 
-        # If the output image is an AstroImage, then solve its astrometry
-        if outImageClass is AstroImage:
+        # If the output image is an ReducedScience, then solve its astrometry
+        if outImageClass is ReducedScience:
             # Clear out the old astrometry
             outImg.clear_astrometry()
 

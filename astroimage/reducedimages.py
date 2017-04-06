@@ -73,9 +73,9 @@ class ReducedImage(BaseImage):
     Examples
     --------
     Read in calibrated files
-    >>> from astroimage import AstroImage
-    >>> img1 = AstroImage.read('img1.fits')
-    >>> img2 = AstroImage.read('img2.fits')
+    >>> from astroimage import ReducedScience
+    >>> img1 = ReducedScience.read('img1.fits')
+    >>> img2 = ReducedScience.read('img2.fits')
 
     Check that the images are the same dimensions
     >>> img1.shape, img2.shape
@@ -372,7 +372,7 @@ class ReducedImage(BaseImage):
     #
     #     # TODO -- write the subclass methods to simply invoke the analogous
     #     # BaseImage method and then tack on additional behaviour (e.g. updating
-    #     # the wcs in an AstroImage instance or reading in the image uncertainty
+    #     # the wcs in an ReducedScience instance or reading in the image uncertainty
     #     # for a ReducedImage instance)
     #
     #     # Grab the shape of the initial array

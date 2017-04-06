@@ -10,7 +10,7 @@ from astropy.io import fits
 from astropy.wcs import WCS
 
 # AstroImage imports
-from .astroimage import AstroImage
+from .reducedscience import ReducedScience
 
 # Define which functions, classes, objects, etc... will be imported via the command
 # >>> from imagestack import *
@@ -22,7 +22,7 @@ class AstrometrySolver(object):
 
     Properties
     ----------
-    image     The AstroImage instance for which to solve astrometry
+    image     The ReducedScience instance for which to solve astrometry
 
     Methods
     -------
@@ -31,12 +31,12 @@ class AstrometrySolver(object):
 
     def __init__(self, image):
         """
-        Constructs an AstrometrySolver instance using the supplied AstroImage
-        image instance
+        Constructs an AstrometrySolver instance using the supplied
+        ReducedScience image instance
         """
-        # Check if an AstroImage was provided
-        if type(image) is not AstroImage:
-            raise TypeError('`image` must be an AstroImage instance')
+        # Check if an ReducedScience was provided
+        if issubclass(type(image), ReducedScience):
+            raise TypeError('`image` must be an ReducedScience instance')
 
         # Otherwise simply store the image in the image attribute
         self.image = image
@@ -340,7 +340,7 @@ class AstrometrySolver(object):
 
         Returns
         -------
-        outImg : AstroImage
+        outImg : ReducedScience
             A copy of the original image with the best fitting astrometric
             solution stored in the `header` and `wcs` properties. If the
             astrometric solution was not successful, then this will simply be

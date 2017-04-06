@@ -37,9 +37,9 @@ from .imagenumericsmixin import ImageNumericsMixin
 
 # Define which functions, classes, objects, etc... will be imported via the command
 # >>> from .astroimage import *
-__all__ = ['AstroImage']
+__all__ = ['ReducedScience']
 
-class AstroImage(ImageNumericsMixin, ReducedImage):
+class ReducedScience(ImageNumericsMixin, ReducedImage):
     """
     A class for handling fully reduced science frames.
 
@@ -79,7 +79,7 @@ class AstroImage(ImageNumericsMixin, ReducedImage):
 
     def __init__(self, *args, **kwargs):
         # Invoke the parent class __init__ method
-        super(AstroImage, self).__init__(*args, **kwargs)
+        super(ReducedScience, self).__init__(*args, **kwargs)
 
         # Test if there is any WCS present in this header
         # NOTE: IT WOULD SEEM THAT THE WCS(self.header) CALL IS WHAT IS
@@ -129,7 +129,7 @@ class AstroImage(ImageNumericsMixin, ReducedImage):
         if self.has_wcs:
             return proj_plane_pixel_scales(self.wcs) * (u.deg/u.pix)
         else:
-            raise AttributeError('This `AstroImage` does not have a wcs defined')
+            raise AttributeError('This `ReducedScience` does not have a wcs defined')
 
     @property
     def pixel_area(self):
@@ -137,7 +137,7 @@ class AstroImage(ImageNumericsMixin, ReducedImage):
         if self.has_wcs:
             return proj_plane_pixel_area(self.wcs) * (u.deg**2/u.pix)
         else:
-            raise AttributeError('This `AstroImage` does not have a wcs defined')
+            raise AttributeError('This `ReducedScience` does not have a wcs defined')
 
     @property
     def rotation(self):
@@ -181,7 +181,7 @@ class AstroImage(ImageNumericsMixin, ReducedImage):
                 return 0.0
 
         else:
-            raise AttributeError('This `AstroImage` does not have a wcs defined')
+            raise AttributeError('This `ReducedScience` does not have a wcs defined')
 
     @property
     def is_scaled(self):
@@ -614,7 +614,7 @@ class AstroImage(ImageNumericsMixin, ReducedImage):
         Sets the instance properties from the values supplied in the propDict
         """
         # Call the parent method
-        super(AstroImage, self)._dictionary_to_properties(propDict)
+        super(ReducedScience, self)._dictionary_to_properties(propDict)
 
         # Extend the method to include the bscale property
         if 'bscale' in propDict:
@@ -653,7 +653,7 @@ class AstroImage(ImageNumericsMixin, ReducedImage):
 
         Returns
         -------
-        outImg: `AstroImage`
+        outImg: `ReducedScience`
             Padded image with shape increased according to pad_width.
         """
         # AstroImages are ALWAYS 2D (at most!)
@@ -728,7 +728,7 @@ class AstroImage(ImageNumericsMixin, ReducedImage):
 
         Returns
         -------
-        outImg: `AstroImage`
+        outImg: `ReducedScience`
             A copy of the image cropped to the specified locations with updated header
             and astrometry.
         """
@@ -1201,7 +1201,7 @@ class AstroImage(ImageNumericsMixin, ReducedImage):
     def rebin(self, nx, ny, total=False):
         # Extend the rebin method to update the WCS
         # Start by applying the basic rebin method
-        outImg = super(AstroImage, self).rebin(nx, ny, total=total)
+        outImg = super(ReducedScience, self).rebin(nx, ny, total=total)
 
         # Extract the shape and rebinning properties
         ny1, nx1 = self.shape
@@ -1306,7 +1306,7 @@ class AstroImage(ImageNumericsMixin, ReducedImage):
     #         as the input image.
     #     """
     #
-    #     # TODO: rewrite this for the new AstroImage user interface
+    #     # TODO: rewrite this for the new ReducedScience user interface
     #     raise NotImplementedError
     #
     #     # First test for the trivial case
@@ -1485,7 +1485,7 @@ class AstroImage(ImageNumericsMixin, ReducedImage):
         Returns
         -------
         Gx, Gy : numpy.ndarray
-            A tuple of AstroImage instances containing the gradient along the
+            A tuple of numpy.ndarray instances containing the gradient along the
             horizontal axis (Gx) and vertical axis (Gy). The total magnitude of
             the graident can be computed as sqrt(Gx**2 + Gy**2)
         """
@@ -1568,7 +1568,7 @@ class AstroImage(ImageNumericsMixin, ReducedImage):
 
         Returns
         -------
-        outImg : AstroImage
+        outImg : ReducedScience
             A copy of the original image with an muliplicative correction for
             the airmass exctinction applied to it.
         """
@@ -1615,36 +1615,6 @@ class AstroImage(ImageNumericsMixin, ReducedImage):
 
         return outImg
 
-    # def solve_astrometry(self, clobber=False):
-    #     """
-    #     Invokes the astrometry.net engine and solves the image astrometry.
-    #
-    #     Parameters
-    #     ----------
-    #     clobber : bool, optional, default: False
-    #         If true, then whatever WCS may be stored in the header will be
-    #         deleted and overwritten with a new solution.
-    #
-    #     Returns
-    #     -------
-    #     outImg : AstroImage
-    #         A copy of the original image with the best fitting astrometric
-    #         solution stored in the `header` and `wcs` properties. If the
-    #         astrometric solution was not successful, then this will simply be
-    #         the original image.
-    #
-    #     success : bool
-    #         A flag to indicate whether the astrometric solution was sucessful.
-    #         A True value indicates sucess and a False value indicates a problem.
-    #     """
-    #     # Wrap the self object in an astrometry solver
-    #     astroSolver = AstrometrySolver(self)
-    #
-    #     # Run the astrometry solver on this file
-    #     outImg, success = astroSolver.run(clobber=clobber)
-    #
-    #     return outImg, success
-
     # def fix_astrometry(self):
     #     """This ensures that the CDELT values and PC matrix are properly set."""
     #
@@ -1679,7 +1649,7 @@ class AstroImage(ImageNumericsMixin, ReducedImage):
             'CRPIX1', 'CRPIX2',
             'CD1_1', 'CD1_2', 'CD2_1', 'CD2_2',
             'PC1_1', 'PC1_2', 'PC2_1', 'PC2_2',
-            # 'CDELT1', 'CDELT2', # Preserve the CDELT BECAUSE that's where binning is stored! BOOO!
+            'CDELT1', 'CDELT2',
             'CUNIT1', 'CUNIT2',
             'CTYPE1', 'CTYPE2',
             'CRVAL1', 'CRVAL2',
@@ -1759,10 +1729,6 @@ class AstroImage(ImageNumericsMixin, ReducedImage):
         # Convert the wcs to a header
         wcsHeader = wcs.to_header(relax=True)
 
-        ###
-        # TODO: Rewrite BaseImage so that binning can be REMAPPED to something OTHER
-        # than the 'CDELT1' and 'CDELT' keywords (e.g. 'ADELX_01' AND 'ADELY_01')
-        ####
         # Delete the PC and CDELT keywords because we use CDELT for something else....
         if len(wcsHeader['PC*']) > 0:
             del wcsHeader['PC*']

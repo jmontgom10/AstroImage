@@ -16,6 +16,6 @@ provides methods for aligning and combining a set of images cleanly.
 from .baseimage import BaseImage
 from .rawimages import *
 from .reducedimages import *
-from .astroimage import AstroImage
+from .reducedscience import ReducedScience
 from .imagestack import ImageStack
 from .astrometrysolver import AstrometrySolver
