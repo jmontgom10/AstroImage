@@ -35,7 +35,7 @@ class AstrometrySolver(object):
         ReducedScience image instance
         """
         # Check if an ReducedScience was provided
-        if issubclass(type(image), ReducedScience):
+        if not issubclass(type(image), ReducedScience):
             raise TypeError('`image` must be an ReducedScience instance')
 
         # Otherwise simply store the image in the image attribute

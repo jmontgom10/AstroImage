@@ -634,8 +634,6 @@ class RawImage(BaseImage):
         outHeader['NAXIS1'] = outArr.shape[1]
         outHeader['NAXIS2'] = outArr.shape[0]
 
-        # TODO: determine which TYPE of output should be written
-
         # Initalize a blank instance for returning to the user
         outImage = ReducedImage(
             outArr,

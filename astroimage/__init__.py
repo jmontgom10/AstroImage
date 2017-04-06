@@ -12,7 +12,7 @@ The image combination can be performed using the ImageStack class, which
 provides methods for aligning and combining a set of images cleanly.
 """
 
-# Import each class from each file
+# Import each class from each file to make them publicly accessible
 from .baseimage import BaseImage
 from .rawimages import *
 from .reducedimages import *
