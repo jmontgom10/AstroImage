@@ -467,7 +467,7 @@ class ImageStack(object):
                                          average output image
     """
 
-    def __init__(self, imageList):
+    def __init__(self, imageList, gobble=True):
         """
         Constructs an `ImageStacks` from a list or tuple of AstroImage
         instances. The instances can be of any type as long as they are a
@@ -477,6 +477,13 @@ class ImageStack(object):
         ----------
         imageList : iterable
             An iterable list of AstroImage instances (all of the same type)
+
+        gobble : bool, optional, default: True
+            If True, then `imageList` is *emptied* into the ImageStack storage
+            attribute so that `imageList` is empty after constructing the
+            ImageStack. If False, then the contens of `imageList` are simply
+            coppied into the ImageStack storage content, and `imageList` is
+            unaffected. The default value is True in order to save memory.
 
         Returns
         -------
@@ -526,13 +533,26 @@ class ImageStack(object):
                 imageList[i].convert_units_to(targetUnits)
 
         # Store an immutable version of the image list
-        self.__imageList = tuple(imageList)
+        if gobble:
+            # If the gobble parameter is true, then transpose each element of
+            # the intput list into the tupple.
+            self.__imageList = tuple()
+            while len(imageList) > 0:
+                self.__imageList += (imageList.pop(0),)
+        elif not gobble:
+            # If the gobble parameter is false, then just copy the list...
+            self.__imageList = tuple(imageList)
 
         # Store the image list type
         self.__imageType = thisType
 
         # Set an instance variable to indicate whether the images have been aligned
-        self.__aligned = False
+        if issubclass(self.imageType, (RawScience, ReducedScience)):
+            # Assume that science images have not been aligned
+            self.__aligned = False
+        else:
+            # Calibration images do not require alignment
+            self.__aligned = True
 
         # Force all the image shapes to be the same
         self.pad_images_to_match_shapes()
@@ -920,7 +940,7 @@ class ImageStack(object):
         self.apply_image_shift_offsets(dx, dy, padding=padding)
 
         # Set the alignment flag to True
-        self.__aligned = True
+        ReducedScienceed = True
 
     def align_images_with_cross_correlation(self, subPixel=False,
         satLimit=16e3, padding=0):
@@ -964,7 +984,7 @@ class ImageStack(object):
         self.apply_image_shift_offsets(dx, dy, padding=padding)
 
         # Set the alignment flag to True
-        self.__aligned = True
+        ReducedScienceed = True
 
     ####################################
     ### START OF COMBINATION HELPERS ###
@@ -1148,9 +1168,10 @@ class ImageStack(object):
         if backgroundClipStart < 0.1:
             backgroundClipStart = 0.5
             backgroundClipStep  = (backgroundClipSigma - backgroundClipStart)/iters
+
         if starClipStart < 30.0:
             starClipStart = 30.0
-            starClipStep  = (starClipSigma - starClipStart)/iters
+            starClipStep  = 1.0
 
         return (
             backgroundClipStart,
@@ -1345,13 +1366,9 @@ the uncertainty in stellar pixels.""")
         outputClipScale : numpy.ndarrray
             An array containing the sigma-clipping scale AFTER this iteration
         """
-        # Catch a strange situation where star pixels are not incremented but
-        # there IS a star mask provided.
-        if (starClipStep == 0) and (starMask is not False):
-            raise ValueError('`starClipStep` must be a non-zero number if a `starMask` is provided')
-
-        if (starClipStep != 0) and (starMask is False):
-            raise ValueError('`starMask` must be a non-zero array if a `starClipStep` is provided')
+        # If StarMask is false, then set starClipStep to zero.
+        if starMask is False:
+            starClipStep = 0
 
         # Generate simple arrays to indicate which pixels are background/star
         starPix       = np.array(starMask).astype(int)
@@ -1498,7 +1515,6 @@ the uncertainty in stellar pixels.""")
         # unchanging state, or until clipSigma is reached.
         for iLoop in range(iters):
             print('\tProcessing section for (\u03C3(bkg), \u03C3(*)) = ({0:3.2g}, {1:3.2g})'.format(
-
                 backgroundClipStart + backgroundClipStep*iLoop,
                 starClipStart + starClipStep*iLoop))
 
@@ -1518,9 +1534,9 @@ the uncertainty in stellar pixels.""")
                 sigmaClipScale = self._increment_sigma_clip_scale(
                     sigmaClipScale, # Start at the original sigma-clipping
                     nextScale, # Increment only columns with changed masking
-                    backgroundClipStep,
-                    starClipStep,
-                    starMask
+                    backgroundClipStep, # Amount to increment bkg pixels
+                    starClipStep,  # Amount to increment star pixels
+                    starMask # Array indictating star pixels
                 )
 
                 # TODO: delete this code block if everything above is working fine
@@ -1550,7 +1566,7 @@ the uncertainty in stellar pixels.""")
         else:
             # If an array of uncertainties was provided, then we can proceed by
             # propagating those uncertainties.
-            maskedUncertainty = self._propagate_masked_uncertainty(
+            maskedUncertainty = ImageStack._propagate_masked_uncertainty(
                 uncertainty,
                 maskedData.mask
                 )
@@ -1627,6 +1643,8 @@ the uncertainty in stellar pixels.""")
 
         # Compute the number of rows to process at a given time
         numberOfRows, numSections = self._get_number_of_rows_to_process(bitsPerPixel)
+        print('Processing stack in {0} sections of {1} rows'.format(
+            numSections, numberOfRows))
 
         # Compute the sigma-clipping starting points and increments
         tmp = self._get_sigma_clip_start_and_steps(
@@ -1641,6 +1659,7 @@ the uncertainty in stellar pixels.""")
         outUncert = np.zeros((ny, nx))
 
         for sectionNumber in range(numSections):
+            print('Starting section number {0}'.format(sectionNumber+ 1 ))
             # Compute the range of rows to extract
             startRow, endRow = self._get_start_and_end_rows(
                 sectionNumber, numberOfRows
