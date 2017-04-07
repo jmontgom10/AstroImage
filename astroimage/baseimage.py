@@ -422,7 +422,7 @@ class BaseImage(object):
             the provided array and header values.
         """
         # Check if filename is a string
-        if type(filename) is not str:
+        if not issubclass(type(filename), str):
             raise TypeError('`filename` must be a string path')
 
         # Check if filename is a valid file path
@@ -437,11 +437,12 @@ class BaseImage(object):
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                HDUlist = fits.open(filename, do_not_scale_image_data=False)
+                # HDUlist = fits.open(filename, do_not_scale_image_data=False)
 
-                # HDUlist = fits.open(filename, do_not_scale_image_data=True)
                 # TODO: Figure out why the do_not_scale_image_data keyword
                 # is no longer behaving the way I expected?!
+
+                HDUlist = fits.open(filename, do_not_scale_image_data=True)
         except:
             raise FileNotFoundError('File {0} could not be read.'.format(filename))
 
@@ -725,7 +726,8 @@ class BaseImage(object):
     @property
     def expTime(self):
         """The exposure time of the image"""
-        return self.__expTime
+        # !!!ASSUME THAT EXPOSURE TIME IS IN SECONDS!!!
+        return self.__expTime * u.second
 
     @property
     def filename(self):
