@@ -172,6 +172,10 @@ class ReducedImage(BaseImage):
     ### END OF PROPERTIES        ###
     ##################################
 
+    ##################################
+    ### START OF MAGIC METHODS     ###
+    ##################################
+
     def __getitem__(self, key):
         """
         Implements the slice getting method.
@@ -262,6 +266,9 @@ class ReducedImage(BaseImage):
         # TODO: finish this implementation ??? OR Just get rid of it!
 
 
+    ##################################
+    ### END OF MAGIC METHODS     ###
+    ##################################
 
 
 
@@ -319,6 +326,14 @@ class ReducedImage(BaseImage):
 
         return None
 
+    ##################################
+    ### END OF CUSTOM SETTERS      ###
+    ##################################
+
+    ##################################
+    ### START OF OTHER METHODS     ###
+    ##################################
+
     def _build_HDUs(self):
         # Invoke the parent method to build the basic HDU
         HDUs = super(ReducedImage, self)._build_HDUs()
@@ -332,13 +347,18 @@ class ReducedImage(BaseImage):
 
         return HDUs
 
-    ##################################
-    ### END OF CUSTOM SETTERS      ###
-    ##################################
+    def divide_by_expTime(self):
+        """Divides the image by its own exposure time and sets expTime to 1"""
+        # Divide by the exposure time
+        outImg = self/self.expTime
 
-    ##################################
-    ### START OF OTHER METHODS     ###
-    ##################################
+        # Modify the expTime value
+        outImg._BaseImage__expTime = 1.0
+
+        # Make sure the header is updated, too
+        outImg._properties_to_header()
+
+        return outImg
 
     # def rebin(self, nx1, ny1, copy=False, total=False):
     #     """
