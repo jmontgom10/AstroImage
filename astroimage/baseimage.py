@@ -437,26 +437,29 @@ class BaseImage(object):
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                # HDUlist = fits.open(filename, do_not_scale_image_data=False)
-
-                # TODO: Figure out why the do_not_scale_image_data keyword
-                # is no longer behaving the way I expected?!
-
-                HDUlist = fits.open(filename, do_not_scale_image_data=True)
+                HDUlist = fits.open(filename, do_not_scale_image_data=False)
         except:
             raise FileNotFoundError('File {0} could not be read.'.format(filename))
 
         # Initalize keyword argument dictionary for __init__ call
         initKwargs = {}
 
-        # Read in the header and store it in kwargs dictionray
+        # Grab the header from HDUlist set BZERO and BSCALE to trivial values
         thisHeader = HDUlist[0].header
+        thisHeader['BZERO'] = 0
+        thisHeader['BSCALE'] = 1
+
+        # Store the header in the dictionary of arguments to pass to __init__
         initKwargs['header'] = thisHeader
 
         # Parse the number of bits used for each pixel
         floatFlag = thisHeader['BITPIX'] < 0
         numBits   = np.abs(thisHeader['BITPIX'])
 
+        # TODO: treat the BITPIX header value more correctly!
+        # See the following wedsite:
+        # http://docs.astropy.org/en/stable/io/fits/
+        #
         # Determine the appropriate data type for the array.
         if floatFlag:
             if numBits >= 64:
@@ -472,7 +475,7 @@ class BaseImage(object):
                 dataType = np.dtype(np.int16)
 
         # Store the data as the correct data type
-        thisData = HDUlist[0].data.astype(dataType, copy = True)
+        thisData = HDUlist[0].data.astype(dataType)
 
         # Loop through the HDUlist and check for an 'UNCERTAINTY' HDU
         for HDU in HDUlist:

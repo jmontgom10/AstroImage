@@ -11,7 +11,7 @@ config = {
     'author_email': 'jmontgom.10@gmail.com',
     'version': '0.8',
     'install_requires': [
-        'python >= 3.5',
+        # 'python >= 3.5',
         'nose >= 1.3',
         'astropy >= 1.3',
         'wcsaxes >= 0.6',
