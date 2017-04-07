@@ -490,9 +490,11 @@ class ImageStack(object):
         outStack : `ImageStack`
             A new instance containing the data from the image .
         """
-        # Check that a list was provided
-        if not issubclass(type(imageList), list):
-            raise TypeError('`imageList` must be a list of image instances')
+        # Check that a list (or something close o it) was provided
+        try:
+            imageList = list(imageList)
+        except:
+            raise TypeError('`imageList` must be a list or iterable object containing image instances')
 
         # Start by counting the number of images
         numberOfImages = len(imageList)
