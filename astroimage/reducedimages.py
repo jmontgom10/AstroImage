@@ -163,6 +163,38 @@ class ReducedImage(BaseImage):
         else:
             return None
 
+    @uncertainty.setter
+    def uncertainty(self, uncert):
+        """
+        Used to replace the private `uncertainty` attribute.
+
+        Parameters
+        ----------
+        uncert : numpy.ndarray
+            An array containing the array to be placed in the private
+            `uncertainty` property
+
+        Returns
+        -------
+        out : None
+        """
+        # Test if arr is a numpy array
+        if not isinstance(data, np.ndarray):
+            raise TypeError('`untert` must be an instance of numpy.ndarray')
+
+        # Test if the replacement array matches the previous array's shape
+        if data.shap != self.shape:
+            raise ValueError('`uncert` must have shape ({0}x{1})'.format(
+                *self.shape))
+
+        # Update the image uncertainty
+        self._BaseImage__fullData = NDDataArray(
+            self.data,
+            uncertainty=StdDevUncertainty(uncert),
+            unit=self.__fullData.unit,
+            wcs=self.__fullData.wcs
+        )
+
     @property
     def has_uncertainty(self):
         """Boolean flag if the `uncertainty` property exists"""
@@ -334,13 +366,13 @@ class ReducedImage(BaseImage):
     ### START OF OTHER METHODS     ###
     ##################################
 
-    def _build_HDUs(self):
+    def _build_HDUs(self, dtype):
         # Invoke the parent method to build the basic HDU
         HDUs = super(ReducedImage, self)._build_HDUs()
 
         if self.uncertainty is not None:
              # Bulid a secondary HDU
-            sigmaHDU = fits.ImageHDU(data = self.uncertainty,
+            sigmaHDU = fits.ImageHDU(data = self.uncertainty.astype(dtype),
                                      name = 'UNCERTAINTY',
                                      do_not_scale_image_data=True)
             HDUs.append(sigmaHDU)
