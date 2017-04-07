@@ -604,9 +604,6 @@ class BaseImage(object):
             # Grab the provided unit and test if it's the right type
             thisUnit = newPropertiesDict['unit']
 
-            # TODO: Make this MUCH MUCH more robust
-            if thisUnit == 'ADU': thisUnit = 'adu'
-
             if issubclass(type(thisUnit), (u.UnitBase, str)):
                 try:
                     # Store the unit in the keyword arguements for the NDData object
@@ -837,14 +834,22 @@ class BaseImage(object):
     @lru_cache()
     def mode(self):
         """An estimate of the statistical mode of this image"""
-        # Compute the number of bins that will be needed to find mode
-        numBins = np.int(np.ceil(0.1*(np.max(self.data) - np.min(self.data))))
+        # SUPER fast and sloppy mode estimate:
+        mean, median, std = self.sigma_clipped_stats()
+        quickModeEst = 3*median - 2*mean
+
+        # Compute an approximately 3-sigma range about this
+        modeRegion = quickModeEst + std*np.array([-1.5, +1.5])
+
+        # Now compute the number of bins to generate in this range
+        numBins = np.int(np.ceil(0.1*(np.max(modeRegion) - np.min(modeRegion))))
 
         # Loop through larger and larger binning until find unique solution
         foundMode = False
         while not foundMode:
             # Generate a histogram of the flat field
-            hist, flatBins = np.histogram(self.data.flatten(), numBins)
+            hist, flatBins = np.histogram(self.data.flatten(), numBins,
+                range=modeRegion)
 
             # Locate the histogram maximum
             maxInds = (np.where(hist == np.max(hist)))[0]
