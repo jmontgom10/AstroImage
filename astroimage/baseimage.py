@@ -661,48 +661,43 @@ class BaseImage(object):
         """The array containing the image values"""
         return self.__fullData.data
 
-    # TODO:
-    # Decide whether or not to let thu user set the image array this way. They
-    # can always construct a NEW image using the array they want.
-    #
-    # @data.setter
-    # def data(self, data):
-    #     """
-    #     Used to replace the private `data` attribute.
-    #
-    #     Parameters
-    #     ----------
-    #     data : numpy.ndarray
-    #         An array containing the array to be placed in the private `data`
-    #         property
-    #
-    #     Returns
-    #     -------
-    #     out : None
-    #     """
-    #     # Test if arr is a numpy array
-    #     if not isinstance(data, np.ndarray):
-    #         raise TypeError('`data` must be an instance of numpy.ndarray')
-    #
-    #     # Test if the replacement array matches the previous array's shape
-    #     newShape = self.shape != arr.shape
-    #     if newShape:
-    #         raise ValueError('`data` must have shape ({0}x{1})'.format(
-    #             *self.shape
-    #         ))
-    #
-    #     # Update the image array
-    #     self.__fullData = NDDataArray(
-    #         data,
-    #         uncertainty=self.__fullData.uncertainty,
-    #         unit=self.__fullData.unit,
-    #         wcs=self.__fullData.wcs
-    #     )
-    #
-    #     # Update the dtype and header values to match the new array
-    #     self.__header['BITPIX'] = self._dtype_to_bitpix(self.dtype)
-    #
-    #     return None
+    @data.setter
+    def data(self, data):
+        """
+        Used to replace the private `data` attribute.
+
+        Parameters
+        ----------
+        data : numpy.ndarray
+            An array containing the array to be placed in the private `data`
+            property
+
+        Returns
+        -------
+        out : None
+        """
+        # Test if arr is a numpy array
+        if not isinstance(data, np.ndarray):
+            raise TypeError('`data` must be an instance of numpy.ndarray')
+
+        # Test if the replacement array matches the previous array's shape
+        newShape = self.shape != data.shape
+        if newShape:
+            raise ValueError('`data` must have shape ({0}x{1})'.format(
+                *self.shape))
+
+        # Update the image array
+        self.__fullData = NDDataArray(
+            data,
+            uncertainty=self.__fullData.uncertainty,
+            unit=self.__fullData.unit,
+            wcs=self.__fullData.wcs
+        )
+
+        # Update the dtype and header values to match the new array
+        self.__header['BITPIX'] = self._dtype_to_bitpix(self.dtype)
+
+        return None
 
     @property
     def binning(self):
@@ -760,31 +755,27 @@ class BaseImage(object):
         """The header associated with this fits image"""
         return self.__header
 
-    # TODO:
-    # Decide whether or not to let the user set the image header this way.
-    # They can always construct a NEW image using the header they want.
-    #
-    # @header.setter
-    # def header(self, head):
-    #     """
-    #     Used to replace the private `header` attribute.
-    #
-    #     Parameters
-    #     ----------
-    #     head : astropy.io.fits.header.Header
-    #         An astropy Header instance to be placed in the `header` attribute.
-    #
-    #     Returns
-    #     -------
-    #     out : None
-    #     """
-    #     # Test if head is a fits.Header object
-    #     if not isinstance(head, fits.Header):
-    #         raise TypeError('`head` must be an instance of astropy.io.fits.header.Header.')
-    #
-    #     self.__header = head
-    #
-    #     return None
+    @header.setter
+    def header(self, head):
+        """
+        Used to replace the private `header` attribute.
+
+        Parameters
+        ----------
+        head : astropy.io.fits.header.Header
+            An astropy Header instance to be placed in the `header` attribute.
+
+        Returns
+        -------
+        out : None
+        """
+        # Test if head is a fits.Header object
+        if not isinstance(head, fits.Header):
+            raise TypeError('`head` must be an instance of astropy.io.fits.header.Header.')
+
+        self.__header = head
+
+        return None
 
     @property
     def height(self):
@@ -841,6 +832,34 @@ class BaseImage(object):
     #         raise TypeError('`obs` must be a string object')
     #
     #     self.__obsType = obs
+
+    @property
+    @lru_cache()
+    def mode(self):
+        """An estimate of the statistical mode of this image"""
+        # Compute the number of bins that will be needed to find mode
+        numBins = np.int(np.ceil(0.1*(np.max(self.data) - np.min(self.data))))
+
+        # Loop through larger and larger binning until find unique solution
+        foundMode = False
+        while not foundMode:
+            # Generate a histogram of the flat field
+            hist, flatBins = np.histogram(self.data.flatten(), numBins)
+
+            # Locate the histogram maximum
+            maxInds = (np.where(hist == np.max(hist)))[0]
+            if maxInds.size == 1:
+                # Grab the index of the maximum value and shrink
+                maxInd = maxInds[0]
+                foundMode = True
+            else:
+                # Shrink the NUMBER of bins to help find a unqiue maximum
+                numBins *= 0.9
+
+        # Estimate flatMode from histogram maximum
+        flatMode = np.mean(flatBins[maxInd:maxInd+2])*self.unit
+
+        return flatMode
 
     @ property
     def image(self):
