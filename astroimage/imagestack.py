@@ -1009,10 +1009,11 @@ class ImageStack(object):
         numSections : int
             The total number of sections in the ImageStack instance
         """
+        # TODO: do a better job estimating the number of rows to process.
         # Compute the number of pixels that fit under the memory limit.
         memLimit    = (psutil.virtual_memory().available/
                       (bitsPerPixel*(1024**2)))
-        memLimit    = int(10*np.floor(memLimit/10.0))
+        memLimit    = int(50*np.floor(memLimit/10.0))
         numStackPix = memLimit*(1024**2)*8/bitsPerPixel
 
         # Grab the number of images and the shape of those image

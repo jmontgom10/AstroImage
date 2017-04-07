@@ -390,7 +390,7 @@ class BaseImage(object):
                 # Now test if the property was previously set and issue a
                 # warning before overwriting header property values
                 if prop in outDict:
-                    warningString = '\n\tProperty {0} = {1} from the header will be overwritten\n\twith {0} = {2} from the properties keyword.'
+                    warningString = '\n\t{0} = {1} from the header will be overwritten with\n\t{0} = {2} from the properties keyword.'
                     warningString =  warningString.format(
                         prop, outDict[prop], properties[prop])
                     warnings.warn(warningString)
@@ -582,13 +582,11 @@ class BaseImage(object):
             # If no properties dictionary was defined, then create a blank one
             thisProperties = {}
 
-        # TODO: pass both header AND properties KEYWORD into a static method,
+        # pass both header AND properties KEYWORD into a static method,
         # which will then return a single dictionary containing all the
         # properties to be uploaded to the "self" (PRECEDENCE IS GIVEN TO THE
         # PROPERTIES KWARG SO THAT THE USER CAN OVERWRITE THE HEADER information
         # IF THEY WANT TO.)
-
-        # Parse the header and properties dictionary for their values
         newPropertiesDict = self._parse_header_and_properties(
             thisHeader,
             thisProperties
@@ -678,8 +676,7 @@ class BaseImage(object):
             raise TypeError('`data` must be an instance of numpy.ndarray')
 
         # Test if the replacement array matches the previous array's shape
-        newShape = self.shape != data.shape
-        if newShape:
+        if data.shape != self.shape:
             raise ValueError('`data` must have shape ({0}x{1})'.format(
                 *self.shape))
 
@@ -1363,32 +1360,6 @@ class BaseImage(object):
     ### START OF CUSTOM SETTERS    ###
     ##################################
 
-    # TODO: Figure out whether I should use an explicit "set_data" method or
-    # simply migrate this code over to a @arr.setter decorated method.
-    #
-    # PRO @arr.setter
-    # Never worry about changing the interface to set/get the arr attribute
-    #
-    # CON @arr.setter
-    # Cannot use any keyword arguments to FORCE the array shape to change size.
-    #
-    # Possible workaround:
-    # Use keyword arguments in the __init__ method to allow a new BaseImage
-    # instance to be constructed using predefined arrays and header. E.g.
-    #
-    # >>> from astroimage import BaseImage
-    # >>> from astropy.io import fits
-    # >>> arr1    = np.arange(100).reshape((10,10))
-    # >>> sigma1  = np.sqrt(arr1)
-    # >>> header1 = fits.Header({'NAXIS1':10, 'NAXIS2':10})
-    # >>> img = BaseImage(arr=arr, uncertainty=sigma1, header=header1)
-    # >>> print(
-    # ... ((img.data == arr1).all(),
-    # ... (img.uncertainty == sigma1).all(),
-    # ... (img.header == header1))
-    # ... )
-    # (True, True, True)
-
     def _dictionary_to_properties(self, propDict):
         """
         Sets the instance properties from the values supplied in the propDict
@@ -1397,6 +1368,7 @@ class BaseImage(object):
             try:
                 binning = tuple(propDict['binning'])
                 assert len(binning) == 2
+                # Force the values to be integers and then store it
                 self.__binning = binning
             except:
                 raise TypeError('`binning` property must be convertible to a two elemnt tuple')
@@ -1699,6 +1671,8 @@ class BaseImage(object):
     ##################################
 
     def astype(self, dtype, copy=True):
+        # TODO: test and make sure that uncertainty array is also changed to the
+        # proper data type.
         """
         Converts the data stored in the `data` to the requested datatype and
         updates the header to reflect that. If `copy` is set to True, then a
@@ -1734,10 +1708,18 @@ class BaseImage(object):
         else:
             outImg = self
 
+        # Build the converted output data array
+        outData = self.data.astype(dtype1)
+
+        # Build the converted output uncertainty
+        if self._BaseImage__fullData.uncertainty is not None:
+            outUncert = self.uncertainty.astype(dtype1)
+            outUncert = StdDevUncertainty(outUncert)
+
         # Construct a new, recast, data structure
         outImg._BaseImage__fullData = NDDataArray(
-            self.data.astype(dtype1),
-            uncertainty=self._BaseImage__fullData.uncertainty,
+            outData,
+            uncertainty=outUncert,
             unit=self._BaseImage__fullData.unit,
             wcs=self._BaseImage__fullData.wcs
         )
@@ -1878,7 +1860,7 @@ class BaseImage(object):
         outImg._properties_to_header()
 
         # Extract the HDU data
-        HDUs = outImg._build_HDUs()
+        HDUs = outImg._build_HDUs(dtype)
 
         # Build the final output HDUlist
         HDUlist = fits.HDUList(HDUs)
