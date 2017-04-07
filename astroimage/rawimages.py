@@ -291,11 +291,17 @@ class RawImage(BaseImage):
         gradUncert = np.sqrt(np.convolve(uncert**2, [1, 0, 1], mode='same'))
 
         # Kill of the edge effects
-        arrGrad[1]  = 0.0
+        arrGrad[0]  = 0.0
         arrGrad[-1] = 0.0
 
+        # Grab the jump indices and add the BIGINNING and END of the image as
+        # possible break points
+        jumpInds = np.where(arrGrad > sig*gradUncert)
+        jumpInds = jumpInds[0]
+        jumpInds = np.hstack([0, jumpInds, arr.size-1])
+
         # Now, simply test for where the gradient exceeds the sigma-cut
-        return np.where(arrGrad > sig*gradUncert)
+        return jumpInds
 
     ##################################
     ### START OF OTHER METHODS     ###
@@ -319,7 +325,7 @@ class RawImage(BaseImage):
                 raise TypeError('`prescanWidth` property must be convertible to an integer')
 
             # Find the binning-specific prescan width and store it for reference
-            prescanPix1 = (prescanWidth + 40)//self.binning[0]
+            prescanPix1 = int((prescanWidth + 28)//self.binning[0])
             self.__prescanWidth = prescanPix1
 
             # Grab the prescan data
@@ -333,7 +339,6 @@ class RawImage(BaseImage):
             jumpInds = RawImage._where_jumps(
                 prescanRowValues, uncert=prescanRowUncert
             )
-            jumpInds = jumpInds[0]
 
             if jumpInds.size > 1:
                 # If at least 2 jumps were found, then find the largest region
@@ -381,7 +386,7 @@ class RawImage(BaseImage):
                 raise TypeError('`overscanWidth` property must be convertible to an integer')
 
             # Find the binning-specific prescan width and store it for reference
-            overscanPix1 = (overscanWidth + 40)//self.binning[0]
+            overscanPix1 = int((overscanWidth + 28)//self.binning[0])
             self.__overscanWidth = overscanPix1
 
             # Grab the overscan data
@@ -394,7 +399,6 @@ class RawImage(BaseImage):
             # Find the inds of the jumps
             jumpInds = RawImage._where_jumps(
                 overscanRowValues, uncert=overscanRowUncert)
-            jumpInds = jumpInds[0]
 
             if jumpInds.size > 1:
                 # If at least 2 jumps were found, then find the largest region
@@ -592,10 +596,10 @@ class RawImage(BaseImage):
             if type(dark) is MasterDark:
                 if dark.is_significant:
                     outArr   -= self.expTime.value*dark.data
-                    outUncert = np.sqrt(
+                    outUncert = np.sqrt(np.abs(
                         outUncert**2 +
                         (self.expTime.value*dark.uncertainty)**2
-                    )
+                    ))
                 else:
                     warnings.warn('Skipping insignificant dark current levels')
             else:
@@ -612,19 +616,19 @@ class RawImage(BaseImage):
             poissonUncert = outArr/self.gain
 
             # Include the poisson uncertainty in the output uncertainty
-            outUncert = np.sqrt(
+            outUncert = np.sqrt(np.abs(
                 outUncert**2 + poissonUncert
-            )
+            ))
 
         if flat is not None and divideFlat:
             if type(flat) is MasterFlat:
                 A = outArr
                 B = flat.data
                 outArr    = A/B
-                outUncert = np.abs(outArr)*np.sqrt(
+                outUncert = np.abs(outArr)*np.sqrt(np.abs(
                     (outUncert/A)**2 +
                     (flat.uncertainty/B)**2
-                )
+                ))
             else:
                 raise TypeError('`flat` must be a MasterFlat image')
 
@@ -647,12 +651,11 @@ class RawImage(BaseImage):
         outHeader['NAXIS1'] = outArr.shape[1]
         outHeader['NAXIS2'] = outArr.shape[0]
 
-        # Initalize a blank instance for returning to the user
+        # Copy the input image and then update the data and uncertainty values
         outImage = ReducedImage(
             outArr,
             uncertainty=outUncert,
-            header=outHeader,
-            properties={'unit': self.unit}
+            header=outHeader
         )
 
         return outImage
