@@ -48,10 +48,10 @@ class RawImage(BaseImage):
     height          The height of the image, in pixels
     image           The AxesImage storing the plotted data (if plotted)
     instrument      The instrument from which the image was obtained
-    overscan        The overscan region of the FITS image
-    overscanPix     The width of the overscan region
-    prescan         The prescan region of the FITS image
-    prescanPix      The width of the prescan region
+    overscanArray   The overscan region of the FITS image
+    overscanWidth   The width of the overscan region
+    prescanArray    The prescan region of the FITS image
+    prescanWidth    The width of the prescan region
     ra              The right ascension of the observation in the format
                     HH:MM:SS.SS
     shape           Dimensions of the image as a tuple, returned as height, then
@@ -68,7 +68,7 @@ class RawImage(BaseImage):
 
     Methods
     -------
-    set_arr
+    set_data
     set_header
     copy
     write
@@ -174,6 +174,15 @@ class RawImage(BaseImage):
     ##################################
     ### START OF PROPERTIES        ###
     ##################################
+    @property
+    def has_uncertainty(self):
+        """Boolean flag if the `uncertainty` property exists"""
+        return False
+
+    @property
+    def has_wcs(self):
+        """Boolean flag if the `wcs` property exists"""
+        return False
 
     @property
     def prescanArray(self):
@@ -485,8 +494,12 @@ class RawImage(BaseImage):
             # Build an estimator using the LASSO procedure
             est = make_pipeline(PolynomialFeatures(degree), Lasso(alpha=alpha))
 
-            # Peform the estimation
-            est.fit(X, y)
+            with warnings.catch_warnings():
+                # Ignore the warnings from this method...
+                warnings.simplefilter("ignore")
+
+                # Peform the estimation
+                est.fit(X, y)
 
             # Get the fitted overscan column
             fittedOverscanCol = est.predict(X)
@@ -578,10 +591,10 @@ class RawImage(BaseImage):
         if dark is not None and subtractDark:
             if type(dark) is MasterDark:
                 if dark.is_significant:
-                    outArr   -= self.expTime*dark.data
+                    outArr   -= self.expTime.value*dark.data
                     outUncert = np.sqrt(
                         outUncert**2 +
-                        (self.expTime*dark.uncertainty)**2
+                        (self.expTime.value*dark.uncertainty)**2
                     )
                 else:
                     warnings.warn('Skipping insignificant dark current levels')
