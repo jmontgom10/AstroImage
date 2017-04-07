@@ -646,34 +646,6 @@ class MasterFlat(ReducedImage):
     ### START OF PROPERTIES        ###
     ##################################
 
-    @property
-    @lru_cache()
-    def mode(self):
-        """An estimate of the statistical mode of this image"""
-        # Compute the number of bins that will be needed to find mode
-        numBins = np.int(np.ceil(0.1*(np.max(self.data) - np.min(self.data))))
-
-        # Loop through larger and larger binning until find unique solution
-        foundMode = False
-        while not foundMode:
-            # Generate a histogram of the flat field
-            hist, flatBins = np.histogram(self.data.flatten(), numBins)
-
-            # Locate the histogram maximum
-            maxInds = (np.where(hist == np.max(hist)))[0]
-            if maxInds.size == 1:
-                # Grab the index of the maximum value and shrink
-                maxInd = maxInds[0]
-                foundMode = True
-            else:
-                # Shrink the NUMBER of bins to help find a unqiue maximum
-                numBins *= 0.9
-
-        # Estimate flatMode from histogram maximum
-        flatMode = np.mean(flatBins[maxInd:maxInd+2])*self.unit
-
-        return flatMode
-
     ##################################
     ### END OF PROPERTIES          ###
     ##################################
