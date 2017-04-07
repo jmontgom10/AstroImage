@@ -2,6 +2,9 @@
 *.fit
 *.fits
 
+# Ignore my toy example file: basic_example.py
+basic_example*
+
 # Ignore the build files
 build\
 build/
