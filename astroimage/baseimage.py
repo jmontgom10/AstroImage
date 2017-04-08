@@ -223,32 +223,6 @@ class BaseImage(object):
         baseClass = thisClass_methodResolutionOrder[-2]
         return baseClass
 
-    @classmethod
-    def _header_handler(cls, header):
-        """Modifies header in a way to be specified by the user"""
-        # By default, do not modify the header at all.
-        return header
-
-    @classmethod
-    def set_header_handler(cls, handlerFunction):
-        """
-        Sets the `_header_handler` helper method for the class
-
-        The `handlerFunction` will be applied to input headers as part of the
-        __init__ method. The purpose of this is to provide the user with a means
-        of making some minor changes to image headers as they are read in. For
-        example, if the image binning were stored in the `CDELT1` and `CDELT2`
-        keywords, those values can be moved elsewhere for safekeeping.
-
-        Parameters
-        ----------
-        handlerFunction : function
-            The handlerFunction must be a predefined function which takes an
-            astropy.io.fits.header.Header object as its only argument, Modifies
-            that header in some way, and then returns the modified header.
-        """
-        cls.baseClass._header_handler = handlerFunction
-
     @ClassProperty
     @classmethod
     def headerKeywordDict(cls):
@@ -1327,8 +1301,8 @@ class BaseImage(object):
         '------------------------------------\n' + \
         'Airmass:        ' + str(self.airmass) + '\n' + \
         'Binning:        ' + str(self.binning[0]) + ' x ' + str(self.binning[1]) + '\n' + \
-        'UTC Obs Time:   ' + str(self.date) + '\n' + \
-        'RA/DEC:         ' + str(self.ra) + '   ' + str(self.dec) + '\n' + \
+        'UTC Obs Time:   ' + self.date.strftime('%Y-%m-%d   %H:%M:%S') + '\n' + \
+        '(RA, Dec):      ('+ str(self.ra) + ', ' + str(self.dec) + ')\n' + \
         'Exposure Time:  ' + str(self.expTime) + ' seconds\n' + \
         'Image Size:     ' + str(self.width) + ' x ' + str(self.height) + '\n' + \
         'Units:          ' + str(self.unit)
@@ -1421,15 +1395,10 @@ class BaseImage(object):
             date = propDict['date']
             if type(date) is not str:
                 raise TypeError('`date` property must be a string')
-            self.__date = date
+            self.__date = datetime.strptime(date, '%Y-%m-%dT%H:%M:%S.%f')
         else:
             # Set the current date-time as the date value
-            nowDateStr = str(datetime.utcnow())
-            # Trim off the fractions of a second
-            nowDateStr = (nowDateStr.split('.'))[0]
-            # Reformat to match what would be provided by a FITS header
-            nowDateStr = nowDateStr.replace(' ', '  ')
-            nowDateStr = nowDateStr.replace('T', '  ')
+            nowDateStr = datetime.utcnow()
             self.__date = nowDateStr
 
         if 'airmass' in propDict:
