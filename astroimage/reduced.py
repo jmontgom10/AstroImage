@@ -15,11 +15,11 @@ import numpy as np
 from scipy import ndimage
 
 # Astropy imports
+from astropy.io import fits
 from astropy.nddata import NDDataArray, StdDevUncertainty
 from astropy.modeling import models, fitting
-from astropy.io import fits
 from astropy.wcs import WCS
-from astropy.coordinates import SkyCoord
+from astropy.coordinates import SkyCoord, FK4, FK5
 from astropy.wcs.utils import proj_plane_pixel_scales, proj_plane_pixel_area
 from astropy import units as u
 from astropy.stats import sigma_clip, sigma_clipped_stats
@@ -31,15 +31,284 @@ import matplotlib.colors as mcol
 import matplotlib.pyplot as plt
 
 # AstroImage imports
-from .baseimage import ClassProperty
-from .reducedimages import ReducedImage
-from .imagenumericsmixin import ImageNumericsMixin
+from .baseimage import BaseImage, ClassProperty
+from .mixins import NumericsMixin, ResizingMixin
 
 # Define which functions, classes, objects, etc... will be imported via the command
-# >>> from .astroimage import *
-__all__ = ['ReducedScience']
+# >>> from .reducedimage import *
+__all__ = ['MasterBias', 'MasterDark', 'MasterFlat', 'ReducedScience']
 
-class ReducedScience(ImageNumericsMixin, ReducedImage):
+class ReducedImage(BaseImage):
+    """
+    The base class for reduced calibration and science data.
+
+    Defines additional mathematical operations (e.g., trig and log functions)
+
+    Properties
+    ----------
+    airmass         The airmass of the observation
+    axes            The Axes instance storing the plotted image (if plotted)
+    data            The actual 2D numpy array of the image in the fits file
+    binning         The binning of the image as a tuple, returned as binning
+                    along the height axis, then width axis
+    date            The UTC date and time of the observation in the format
+                    YYYY-MM-DD   HH:MM:SS.SS
+    dec             The declination of the observation in the format
+                    +DD:(AM)(AM):(AS)(AS).(AS)(AS)
+    dtype           The data type of the image array (see `numpy.ndarray`)
+    expTime         The total exposure time, in seconds
+    figure          The Figure instance storing the plotted axes (if plotted)
+    filename        The image filename on disk
+    filter          The filter through which the image was obtained
+    header          The header info for the associated fits file.
+    height          The height of the image, in pixels.
+    image           The AxesImage storing the plottted data (if plotted)
+    instrument      The instrument from which the image was obtained
+    ra              The right ascension of the observation in the format
+                    HH:MM:SS.SS
+    shape           Dimensions of the image as a tuple, returned as height, then
+                    width, in pixels, in keeping with the behavior of the
+                    `numpy.ndarray` size attribute.
+    uncertainty     The array of uncertainties associated with `data`
+    units           The units of the numpy 2D array stored in `data`
+    width           The width of the image, in pixels
+
+    Class Methods
+    -------------
+    set_headerKeywordDict
+    read
+
+    Methods
+    -------
+    set_arr
+    set_uncertainty
+    set_header
+    copy
+    write
+    rebin
+    show
+
+    Examples
+    --------
+    Read in calibrated files
+    >>> from astroimage import ReducedScience
+    >>> img1 = ReducedScience.read('img1.fits')
+    >>> img2 = ReducedScience.read('img2.fits')
+
+    Check that the images are the same dimensions
+    >>> img1.shape, img2.shape
+    ((500, 500), (500, 500))
+
+    Now compute the mean of those two images
+    >>> img3 = 0.5*(img1 + img2)
+
+    Rebin the resulting image
+    >>> img3.rebin(250, 250)
+
+    Check that the new image has the correct dimensions
+    >>> img3.shape
+    (250, 250)
+
+    Display the resultant average, rebinned image
+    >>> fig, ax, axImg = img3.show()
+    """
+
+    ##################################
+    ### START OF CLASS VARIABLES   ###
+    ##################################
+
+    # Extend the list of acceptable properties for this class
+    __properties = copy.deepcopy(BaseImage.properties)
+    __properties.extend([
+        'uncertainty' # This property and below are for the ReducedImage class
+    ])
+
+    ##################################
+    ### END OF CLASS VARIABLES     ###
+    ##################################
+
+    ##################################
+    ### END OF CLASS METHODS       ###
+    ##################################
+
+    @ClassProperty
+    @classmethod
+    def properties(cls):
+        return cls.__properties
+
+    ##################################
+    ### END OF CLASS METHODS       ###
+    ##################################
+
+    def __init__(self, *args, **kwargs):
+        """
+        Constructs a `ReducedImage` instance from provided arguments.
+
+        More properly implemented by subclasses
+        Parameters
+        ----------
+        data : `numpy.ndarray`, optional
+            The array of values to be stored for this image
+
+        uncertainty : `numpy.ndarray`, optional
+            The uncertainty of the values to be stored for this image
+
+        header : `astropy.io.fits.header.Header`, optional
+            The header to be associated with the `arr` attribute
+
+        properties : `dict`, optional
+            A dictionary of properties to be set for this image
+            (e.g. {'unit': u.adu, 'ra': 132.323, 'dec': 32.987})
+
+        Returns
+        -------
+        outImg : `ReducedImage` (or subclass)
+            A new instance containing the supplied data, header, and
+            properties
+        """
+        # Start by instantiating the basic BaseImage type information
+        super(ReducedImage, self).__init__(*args, **kwargs)
+
+    ##################################
+    ### START OF PROPERTIES        ###
+    ##################################
+
+    @property
+    def has_uncertainty(self):
+        """Boolean flag if the `uncertainty` property exists"""
+        return (self._BaseImage__fullData.uncertainty is not None)
+
+    @property
+    def uncertainty(self):
+        """The uncertainties associated with the `data` values"""
+        if self.has_uncertainty:
+            return self._BaseImage__fullData.uncertainty.array
+        else:
+            return None
+
+    @uncertainty.setter
+    def uncertainty(self, uncert):
+        """
+        Used to replace the private `uncertainty` attribute.
+
+        Parameters
+        ----------
+        uncert : numpy.ndarray
+            An array containing the array to be placed in the private
+            `uncertainty` property
+
+        Returns
+        -------
+        out : None
+        """
+        # Test if arr is a numpy array
+        if not isinstance(uncert, np.ndarray):
+            raise TypeError('`untert` must be an instance of numpy.ndarray')
+
+        # Test if the replacement array matches the previous array's shape
+        if uncert.shape != self.shape:
+            raise ValueError('`uncert` must have shape ({0}x{1})'.format(
+                *self.shape))
+
+        # Update the image uncertainty
+        self._BaseImage__fullData = NDDataArray(
+            self.data,
+            uncertainty=StdDevUncertainty(uncert),
+            unit=self._BaseImage__fullData.unit,
+            wcs=self._BaseImage__fullData.wcs
+        )
+
+    ##################################
+    ### END OF PROPERTIES        ###
+    ##################################
+
+    ##################################
+    ### START OF OTHER METHODS     ###
+    ##################################
+
+    def _build_HDUs(self, dtype):
+        # Invoke the parent method to build the basic HDU
+        HDUs = super(ReducedImage, self)._build_HDUs()
+
+        if self.uncertainty is not None:
+             # Bulid a secondary HDU
+            sigmaHDU = fits.ImageHDU(data = self.uncertainty.astype(dtype),
+                                     name = 'UNCERTAINTY',
+                                     do_not_scale_image_data=True)
+            HDUs.append(sigmaHDU)
+
+        return HDUs
+
+    def divide_by_expTime(self):
+        """Divides the image by its own exposure time and sets expTime to 1"""
+        # Divide by the exposure time
+        outImg = self/self.expTime
+
+        # Modify the expTime value
+        outImg._BaseImage__expTime = 1.0
+
+        # Make sure the header is updated, too
+        outImg._properties_to_header()
+
+        return outImg
+
+    ##################################
+    ### END OF OTHER METHODS       ###
+    ##################################
+
+##################################
+### START OF SUBCLASSES        ###
+##################################
+
+class MasterBias(ReducedImage):
+    """A class for reading in reduced master bias frames."""
+
+    def __init__(self, *args, **kwargs):
+        super(MasterBias, self).__init__(*args, **kwargs)
+
+        if self.obsType != 'BIAS':
+            raise IOError('Cannot instantiate a RawBias with a {0} type image.'.format(
+                self.obsType
+            ))
+
+
+class MasterDark(ReducedImage):
+    """A class for reading in reduced master dark frames."""
+
+    def __init__(self, *args, **kwargs):
+        super(MasterDark, self).__init__(*args, **kwargs)
+
+        if self.obsType != 'DARK':
+            raise IOError('Cannot instantiate a RawDark with a {0} type image.'.format(
+                self.obsType
+            ))
+
+    ##################################
+    ### START OF PROPERTIES        ###
+    ##################################
+
+    @property
+    @lru_cache()
+    def is_significant(self):
+        """Boolean flag if the dark current is greater than 2x(read noise)"""
+        return (np.median(self.data)/np.std(self.data)) > 2.0
+
+    ##################################
+    ### END OF PROPERTIES        ###
+    ##################################
+
+class MasterFlat(ReducedImage):
+    """A class for reading in reduced master flat frames."""
+
+    def __init__(self, *args, **kwargs):
+        super(MasterFlat, self).__init__(*args, **kwargs)
+
+        if self.obsType != 'FLAT':
+            raise IOError('Cannot instantiate a RawFlat with a {0} type image.'.format(
+                self.obsType
+            ))
+
+class ReducedScience(ResizingMixin, NumericsMixin, ReducedImage):
     """
     A class for handling fully reduced science frames.
 
@@ -175,17 +444,19 @@ class ReducedScience(ImageNumericsMixin, ReducedImage):
                     rotAng += (180.0 - self.wcs.wcs.lonpole)
 
                 # Now return the computed rotation angle
-                return rotAng
+                return u.Quantity(rotAng, u.degree)
             else:
                 # No rotation was found, so just return a zero
-                return 0.0
+                return u.Quantity(0.0, u.degree)
 
         else:
-            raise AttributeError('This `ReducedScience` does not have a wcs defined')
+            raise AttributeError('This image does not have a wcs defined')
 
+    # TODO: handling physical units via the `units` property, so this may not
+    # be a relevant property to keep.
     @property
     def is_scaled(self):
-        """Boolean flag of whether `arr` is in scaled units or ADU"""
+        """Boolean flag of whether `data` is in scaled units or ADU"""
         return self.__is_scaled
 
     ##################################
@@ -195,12 +466,22 @@ class ReducedScience(ImageNumericsMixin, ReducedImage):
     ##################################
     ### START OF GETTERS           ###
     ##################################
+    # TODO: add "make_source_mask" convenience method to handle masking and
+    # cache the result
     @lru_cache()
-    def get_sources(self, satLimit=16e3, crowdLimit=0, edgeLimit=0):
+    def get_sources(self, FWHMguess=3.0, minimumSNR=7.0, satLimit=16e3,
+        crowdLimit=0, edgeLimit=50):
         """Implements the daofind algorithm to extract source positions.
 
         Parameters
         ----------
+        FWHMguess : int or float, optional, default: 3.0
+            An estimate of the star full-width-at-half-maximum to be used in the
+            convolution kernel for searching for stars.
+
+        minimumSNR : int or float, optional, default: 5.0
+            The minimum signal-to-noise ratio to consider a source "detected"
+
         satLimit : int or float, optional, default: 16e3
             Sources which contain any pixels with more than this number of
             counts will be discarded from the returned list of sources on
@@ -211,10 +492,11 @@ class ReducedScience(ImageNumericsMixin, ReducedImage):
             pixels) will be discarded from the returned list of sources on
             account of being too crowded.
 
-        edgeLimit : int, or float, optional, default: 0
+        edgeLimit : int, or float, optional, default: 80
             Sources detected within this distance (in pixels) of the image edge
             will be discarded from the returned list of sources on account of
-            being too close to the image edge.
+            being too close to the image edge. The default value of 80 should
+            sufficiently cull any false positives from edge-effects.
 
         Returns
         -------
@@ -241,7 +523,7 @@ class ReducedScience(ImageNumericsMixin, ReducedImage):
         mean, median, std = tmpImg.sigma_clipped_stats()
 
         # Start by instantiating a DAOStarFinder object
-        daofind = DAOStarFinder(fwhm=3.0, threshold=5.0*std)
+        daofind = DAOStarFinder(fwhm=FWHMguess, threshold=minimumSNR*std)
 
         # Use that object to find the stars in the image
         sources = daofind(np.nan_to_num(tmpData) - median)
@@ -251,44 +533,54 @@ class ReducedScience(ImageNumericsMixin, ReducedImage):
 
         # Cut out edge stars if requested
         if edgeLimit > 0:
-            nonEdgeStars = sources['xcentroid'] > edgeLimit
+            xStars, yStars = sources['xcentroid'], sources['ycentroid']
+            nonEdgeStars = xStars > edgeLimit
             nonEdgeStars = np.logical_and(nonEdgeStars,
-                sources['xcentroid'] < nx - edgeLimit - 1)
+                xStars < nx - edgeLimit - 1)
             nonEdgeStars = np.logical_and(nonEdgeStars,
-                sources['ycentroid'] > edgeLimit)
+                yStars > edgeLimit)
             nonEdgeStars = np.logical_and(nonEdgeStars,
-                sources['ycentroid'] < ny - edgeLimit - 1)
+                yStars < ny - edgeLimit - 1)
 
             # Cull the sources list to only include non-edge stars
             if np.sum(nonEdgeStars) > 0:
                 nonEdgeInds = np.where(nonEdgeStars)
                 sources     = sources[nonEdgeInds]
             else:
-                raise IndexError('There are no non-edge stars')
+                warnings.warn('There are no non-edge stars')
+                return np.array([None]), np.array([None])
+                # raise IndexError('There are no non-edge stars')
 
-        # Generate a map of pixel positions
-        yy, xx = np.mgrid[0:ny, 0: nx]
 
         # Perform the saturation test
         notSaturated = []
-        for source in sources:
-            # Extract the position for this source
-            xs, ys = source['xcentroid'], source['ycentroid']
 
-            # Compute the distance from this source
-            dists = np.sqrt((xx - xs)**2 + (yy - ys)**2)
+        # Initalize a circular mask for the star patches
+        xx, yy = np.mgrid[-15:16, -15:16]
+        radialDist = np.sqrt(xx**2 + yy**2)
+        circularMask = (radialDist <= 15.1).astype(np.float)
 
-            # Grab the values within 15 pixels of this source, and test
-            # if the source is saturated
-            nearInds = np.where(dists < 15.0)
-            notSaturated.append(tmpData[nearInds].max() < satLimit)
+        for xStar, yStar in zip(sources['xcentroid'], sources['ycentroid']):
+            # Compute the boundaries of a small cutout for this star
+            bt = np.int(np.floor(yStar - 15))
+            tp = bt + 31
+            lf = np.int(np.floor(xStar - 15))
+            rt = lf + 31
+
+            # Grab the star cutout for this star.
+            starStamp = tmpData[bt:tp, lf:rt]*circularMask
+
+            # Test if the maximum of the star region is a saturated value
+            notSaturated.append(starStamp.max() < satLimit)
 
         # Cull the sources list to ONLY include non-saturated sources
         if np.sum(notSaturated) > 0:
             notSaturatedInds = np.where(notSaturated)
             sources          = sources[notSaturatedInds]
         else:
-            raise IndexError('No sources passed the saturation test')
+            warnings.warn('No sources passed the saturation test')
+            return np.array([None]), np.array([None])
+            # raise IndexError('No sources passed the saturation test')
 
         # Perform the crowding test
         isolatedSource = []
@@ -330,7 +622,41 @@ class ReducedScience(ImageNumericsMixin, ReducedImage):
                 # TODO: Tuck each of these sanity checks into individual methods
 
                 # Check if the source size is greater than 6.0 pixels
-                reasonableSize = sizeParam < 6.0
+                reasonableSize = sizeParam < 21.0
+
+                # Check if the source is a reasonable SHAPE
+                shapeParam = props.semimajor_axis_sigma.value / props.semiminor_axis_sigma.value
+                reasonableShape = shapeParam < 1.2
+
+                # Compute the distance from the cutout center and check if the
+                # centroid is located within 5 pixels of the center. If it,s
+                # not, then this source is on an INCREDIBLY steep gradient.
+                # TODO: Remove gradient using the planeFit function.
+                cutoutSize = tpCut - btCut
+                distanceFromCenter = np.sqrt(
+                    (props.xcentroid.value - 0.5*cutoutSize)**2 +
+                    (props.ycentroid.value - 0.5*cutoutSize)**2
+                )
+                reasonablePosition = distanceFromCenter < 5.0
+
+                # # Directly examine the data and see what's going wrong.
+                # from photutils import EllipticalAperture
+                # position = (props.xcentroid.value, props.ycentroid.value)
+                # r = 1.0 # approximate isophotal extent
+                # aSem = props.semimajor_axis_sigma.value * 1
+                # bSem = props.semiminor_axis_sigma.value * 1
+                # theta = props.orientation.value
+                # apertures = EllipticalAperture(position, aSem, bSem, theta=theta)
+                #
+                # # Plot it up
+                # plt.ion()
+                # plt.imshow(patch_data, origin='lower', cmap='viridis',
+                #     interpolation='nearest')
+                # apertures.plot(color='#d62728')
+                #
+                #
+                # import pdb; pdb.set_trace()
+                # plt.clf()
 
                 # TODO: think through a better algorithum for this whole section
                 # Perhaps the first section is a sufficient test
@@ -354,22 +680,85 @@ class ReducedScience(ImageNumericsMixin, ReducedImage):
                 isolatedBool2 = len(sources1) < 2
 
                 # Check if there are other sources nearby
-                if isolatedBool1 and isolatedBool2 and reasonableSize:
+                if (isolatedBool1 and isolatedBool2 and
+                    reasonableSize and reasonablePosition and reasonableShape):
                     isolatedSource.append(True)
                 else:
                     isolatedSource.append(False)
 
             # Cull the sources list to ONLY include non-crowded sources
-            if np.sum(isolatedSource) > 0:
+            if np.sum(isolatedSource) > 2:
                 isolatedInds = np.where(isolatedSource)
                 sources = sources[isolatedInds]
             else:
-                raise IndexError('No sources passed the crowding test')
+                warnings.warn('No sources passed the crowding test')
+                return np.array([None]), np.array([None])
+                # raise IndexError('No sources passed the crowding test')
 
         # Grab the x, y positions of the sources and return as arrays
         xs, ys = sources['xcentroid'].data, sources['ycentroid'].data
 
         return xs, ys
+
+    @lru_cache()
+    def get_sources_at_coords(self, searchCoords, pointingTolerance=5.0,
+        **kwargs):
+        """
+        Finds any sources near to the specified coordinates.
+
+        If no star meeting the detection critera can be found at a given
+        coordinates, then a None is returned for that star.
+
+        Parameters
+        ----------
+        searchCoords : astropy.coordinates.SkyCoord
+            The coordinates at which to look for stars. If this object contains
+            multiple entries, the pixel coordinates of the nearest star meeting
+            the detection criteria will be returned, or a None value if no stars
+            near that point meet the detection criteria.
+
+        pointingTolerance : int or float, optional, default: 10.0
+            The maximum difference (in arcsec) between the expected location and
+            the detected location.
+
+        Other Parameters
+        ----------------
+        Also takes any of the keyword arguments for the `find_sources` method,
+        and passes them to that method as it searches for stars in the image.
+
+        Returns
+        -------
+        xStars, yStars : numpy.ndarray
+            The pixel positions of the detected stars.
+        """
+        # Find all the stars in the image
+        xAllStars, yAllStars = self.get_sources(**kwargs)
+
+        # Convert the star positions to celestial coordinates
+        allRAs, allDecs = self.wcs.wcs_pix2world(xAllStars, yAllStars, 0, ra_dec_order=True)
+        starCoords = SkyCoord(
+            ra=allRAs,
+            dec=allDecs,
+            unit=u.degree,
+            frame=FK5
+        )
+
+        # Match the two lists of coordinates
+        idx, d2d, _ = searchCoords.match_to_catalog_sky(starCoords)
+
+        # Cull the detected positions to only include positively matched values
+        xStars, yStars = xAllStars[idx], yAllStars[idx]
+
+        # Test if the matches are within the tolerance.
+        toleranceQuantity = u.Quantity(pointingTolerance, u.degree)
+        badMatches        = d2d >  toleranceQuantity
+        badInds           = np.where(badMatches)
+
+        # Replace the matches stars outside of the tolerance with NaN value
+        xStars[badInds] = np.NaN
+        yStars[badInds] = np.NaN
+
+        return xStars, yStars
 
     def extract_star_cutouts(self, xStars, yStars, cutoutSize=21):
         """
@@ -393,6 +782,11 @@ class ReducedScience(ImageNumericsMixin, ReducedImage):
             layer of the array is the background subtracted and normalized
             cutout centered on the star.
         """
+        # Test for a "NO STARS" signal
+        if ((xStars.size == 1 and xStars[0] is None) or
+            (yStars.size == 1 and yStars[0] is None)):
+            # Return a list with NO star cutouts
+            return [None]
 
         # Define a plane fitting function for use within this method only
         def planeFit(points):
@@ -471,135 +865,37 @@ class ReducedScience(ImageNumericsMixin, ReducedImage):
 
         # Resort these stars from brightest to dimmest
         sortInds    = np.array(starFluxes).argsort()
+        sortInds    = sortInds[::-1]
         starCutouts = np.array(starCutouts)[sortInds]
 
+        # # For some reason, the initial plane subtraction doesn't always do the
+        # # trick, so take a second pass at the normalized version.
+        # finalizedCutoutList = []
+        # for starCutout in starCutouts:
+        #     # Fit a plane to the corner samples
+        #     xyzPts = np.array(xyPts + (starCutout[xyPts],))
+        #     point, normalVec = planeFit(xyzPts)
+        #
+        #     # Compute the value of the fited plane background
+        #     planeVals = (
+        #         point[2] +
+        #         (normalVec[0]/normalVec[2])*(xx - point[0]) +
+        #         (normalVec[1]/normalVec[2])*(yy - point[1])
+        #     )
+        #
+        #     # Subtract the fitted plane values
+        #     starCutout1 = starCutout - planeVals
+        #
+        #     # Normalize by the sum of pixel values in this cutout
+        #     starCutout1 /= starCutout.sum()
+        #
+        #     # Append to the finalizedCutoutList
+        #     finalizedCutoutList.append(starCutout1)
+        #
+        # # Convert this to an array
+        # starCutouts = np.array(finalizedCutoutList)
+
         return starCutouts
-
-    @lru_cache()
-    def get_psf(self, satLimit=16e3):
-        """
-        Computes the average PSF properties from the brightest stars in the
-        image.
-
-        Parameters
-        ----------
-        satLimit : int or float, optional, default: 16e3
-            Sources which contain any pixels with more than this number of
-            counts will be discarded from the returned list of sources on
-            account of being saturated.
-
-        Returns
-        -------
-        medianPSF : numpy.ndarray
-            A small postage stamp of the PSF computed from the median star profiles.
-
-        PSFparams : dict
-            The properties of the Gaussian which best fits the array in
-            PSFstamp. See astropy.modeling.functional_models.Gaussian2D for more
-            information about how these values are defined.
-
-            The keys of the dictionary are
-            'smajor': float
-                semimajor axis width in pixels
-            'sminor': float
-                semiminor axis width in pixels
-            'theta':
-                Rotation of the major axis in CCW degreesfrom horizontal axis
-        """
-        cutoutSize = 21
-
-        # Grab the star positions
-        xStars, yStars = self.get_sources(
-            satLimit = satLimit,
-            crowdLimit = crowdLimit,
-            edgeLimit = cutoutSize + 1
-        )
-
-        # Grab the list of star cutouts
-        starCutouts = self.extract_star_cutouts(xStars, yStars, cutoutSize=cutoutSize)
-
-        # Loop through each cutout and grab its data properties
-        sxList      = []
-        syList      = []
-
-        for starCutout in starCutouts:
-            # Retrieve the properties of the star in this patch
-            props = data_properties(starCutout)
-
-            # Store the gaussian component eigen-values
-            sxList.append(props.semimajor_axis_sigma.value)
-            syList.append(props.semiminor_axis_sigma.value)
-
-        # Find potential outliers and mask them
-        sxArr    = sigma_clip(sxList)
-        syArr    = sigma_clip(syList)
-
-        # Find out which stars have good values in BOTH sx and sy
-        badSXSY  = np.logical_or(sxArr.mask, syArr.mask)
-        goodSXSY = np.logical_not(badSXSY)
-
-        # Cut out any patches with bad sx or bad sy values
-        if np.sum(goodSXSY) == 0:
-            raise IndexError('There are no well behaving stars')
-
-        # If some of the patches are bad, then cut those out of the patch list
-        if np.sum(badSXSY) > 0:
-            goodInds    = (np.where(goodSXSY))[0]
-            starCutouts = starCutouts[goodInds, :, :]
-
-        # Compute an "median patch"
-        medianPSF = np.median(starCutoutArray, axis=0)
-
-        # Build a gaussian + 2Dpolynomial (1st degree) model to fit median patch
-        # Build a gaussian model for fitting stars
-        gauss_init = models.Gaussian2D(
-            amplitude=1000.0,
-            x_mean=10.0,
-            y_mean=10.0,
-            x_stddev=3.0,
-            y_stddev=3.0,
-            theta=0.0
-        )
-        # Build a 2Dpolynomial (1st degree) model to fit the background level
-        bkg_init = models.Polynomial2D(1)
-        PSF_init = gauss_init + bkg_init
-        fitter   = fitting.LevMarLSQFitter()
-
-        # Finllay, re-fit a gaussian to this median patch
-        # Ignore model warning from the fitter
-        with warnings.catch_warnings():
-            # Fit the model to the patch
-            warnings.simplefilter('ignore')
-            PSF_model = fitter(PSF_init, xx, yy, medianPSF)
-
-        # Modulate the fitted theta value into a reasonable range
-        goodTheta         = (PSF_model.theta_0.value % (2*np.pi))
-        PSF_model.theta_0 = goodTheta
-
-        # Build a 2D polynomial background to subtract
-        bkg_model = models.Polynomial2D(1)
-
-        # Transfer the background portion of the patch_model to the
-        # polynomial plane model.
-        bkg_model.c0_0 = PSF_model.c0_0_1
-        bkg_model.c1_0 = PSF_model.c1_0_1
-        bkg_model.c0_1 = PSF_model.c0_1_1
-
-        # Subtract the planar background and renormalize the median PSF
-        medianPSF -= bkg_model(xx, yy)
-        medianPSF /= medianPSF.sum()
-
-        # Return the fitted PSF values
-        smajor, sminor, theta = (
-            patch_model.x_stddev_0.value,
-            patch_model.y_stddev_0.value,
-            patch_model.theta_0.value
-        )
-
-        # Define return values and return them to the user
-        PSFparams = {'smajor':smajor, 'sminor':sminor, 'theta':theta}
-
-        return (medianPSF, PSFparams)
 
     ##################################
     ### END OF GETTERS             ###
@@ -625,170 +921,6 @@ class ReducedScience(ImageNumericsMixin, ReducedImage):
             self.__bscale = bscale
         else:
             self.__bscale = None
-
-    def pad(self, pad_width, mode, **kwargs):
-        """
-        Pads the image arrays and updates the header and astrometry.
-
-        Parameters
-        ----------
-        pad_width: sequence, array_like, int
-            Number of values padded to the edges of each axis.
-            ((before_1, after_1), ... (before_N, after_N)) unique pad widths for
-            each axis. ((before, after),) yields same before and after pad for
-            each axis. (pad,) or int is a shortcut for before = after = pad
-            width for all axes. The `pad_width` value in this method is
-            identical to the `pad_width` value in the numpy.pad function.
-
-        mode: str or function
-            Sets the method by which the edges of the image are padded. This
-            argument is directly passed along to the numpy.pad function, so
-            see numpy.pad documentation for more information.
-
-        Other parameters
-        ----------------
-        All keywords allowed for numpy.pad are also permitted for this method.
-        See the numpy.pad documentation for a complete listing of keyword
-        arguments and their permitted values.
-
-        Returns
-        -------
-        outImg: `ReducedScience`
-            Padded image with shape increased according to pad_width.
-        """
-        # AstroImages are ALWAYS 2D (at most!)
-        if len(pad_width) > 2:
-            raise ValueError('Cannot use a`pad_width` value with more than 2-dimensions.')
-
-        # Make a copy of the image to return to the user
-        outImg = self.copy()
-
-        # Pad the primary array
-        outData = np.pad(self.data, pad_width, mode, **kwargs)
-
-        if self._BaseImage__fullData.uncertainty is not None:
-            outUncert = np.pad(self.uncertainty, pad_width, mode, **kwargs)
-            outUncert = StdDevUncertainty(outUncert)
-        else:
-            outUncert = None
-
-        # Update the header information if possible
-        outHeader = self.header.copy()
-
-        # Parse the pad_width parameter
-        if len(pad_width) > 1:
-            # If separate x and y paddings were specified, check them
-            yPad, xPad = pad_width
-
-            # Grab only theh left-padding values
-            if len(xPad) > 1: xPad = xPad[0]
-            if len(yPad) > 1: yPad = yPad[0]
-        else:
-            xPad, yPad = pad_width, pad_width
-
-        # Update image size
-        outHeader['NAXIS1'] = self.shape[1]
-        outHeader['NAXIS2'] = self.shape[0]
-
-        # If the header has a valid WCS, then update that info, too.
-        if self.has_wcs:
-            if self.wcs.has_celestial:
-                # Now apply the actual updates to the header
-                outHeader['CRPIX1'] = self.header['CRPIX1'] + xPad
-                outHeader['CRPIX2'] = self.header['CRPIX2'] + yPad
-
-                # Retrieve the new WCS from the updated header
-                outWCS = WCS(outHeader)
-        else:
-            outWCS = None
-
-        # And store the updated header in the self object
-        outImg._BaseImage__header = outHeader
-
-        # Finally replace the _BaseImage__fullData attribute
-        outImg._BaseImage__fullData = NDDataArray(
-            outData,
-            uncertainty=outUncert,
-            unit=self.unit,
-            wcs=outWCS
-        )
-
-        return outImg
-
-    def crop(self, x1, x2, y1, y2):
-        # TODO use the self.wcs.wcs.sub() method to recompute the right wcs
-        # for a cropped image.
-        """
-        Crops the image to the specified pixel locations.
-
-        Parameters
-        ----------
-        x1, x2, y1, y2: int
-            The pixel locations for the edges of the cropped image.
-
-        Returns
-        -------
-        outImg: `ReducedScience`
-            A copy of the image cropped to the specified locations with updated header
-            and astrometry.
-        """
-        for p in (x1, x2, y1, y2):
-            if not issubclass(type(p), (int, np.int16, np.int32, np.int64)):
-                TypeError('All arguments must be integer values')
-
-        # Check that the crop values are reasonable
-        ny, nx = self.shape
-        if ((x1 < 0) or (x2 > (nx - 1)) or
-            (y1 < 0) or (y2 > (ny - 1)) or
-            (x2 < x1) or (y2 < y1)):
-            raise ValueError('The requested crop values are outside the image.')
-
-        # Make a copy of the array and header
-        outData = self.data.copy()
-
-        # Perform the actual croping
-        outData = outData[y1:y2, x1:x2]
-
-        # Repeat the process for the sigma array if it exists
-        if self._BaseImage__fullData.uncertainty is not None:
-            outUncert = self.uncertainty[y1:y2, x1:x2]
-            outUncert = StdDevUncertainty(outUncert)
-        else:
-            outUncert = None
-
-        outHead = self.header.copy()
-
-        # Update the header keywords
-        # First update the NAXIS keywords
-        outHead['NAXIS1'] = y2 - y1
-        outHead['NAXIS2'] = x2 - x1
-
-        # Next update the CRPIX keywords
-        if 'CRPIX1' in outHead:
-            outHead['CRPIX1'] = outHead['CRPIX1'] - x1
-        if 'CRPIX2' in outHead:
-            outHead['CRPIX2'] = outHead['CRPIX2'] - y1
-
-        # Reread the WCS from the output header if it has a wcs
-        if self.has_wcs:
-            if self.wcs.has_celestial:
-                outWCS = WCS(outHead)
-        else:
-            outWCS = None
-
-        # Copy the image and update its data
-        outImg = self.copy()
-        outImg._BaseImage__fullData = NDDataArray(
-            outData,
-            uncertainty=outUncert,
-            unit=self.unit,
-            wcs=outWCS
-        )
-
-        # Update the header, too.
-        outImg._BaseImage__header = outHead
-
-        return outImg
 
     def shift(self, dx, dy, padding=0.0):
         """Shift the image dx pixels to the right and dy pixels up.
@@ -829,7 +961,7 @@ class ReducedScience(ImageNumericsMixin, ReducedImage):
 
             # Apply the same shifts to the sigma array if it exists
             if self._BaseImage__fullData.uncertainty is not None:
-                shiftUncert = np.roll(self.uncertainty, dx, axis = 1)
+                shiftedUncert = np.roll(self.uncertainty, dx, axis = 1)
 
         else:
             # The x-shift is non-integer...
@@ -855,7 +987,7 @@ class ReducedScience(ImageNumericsMixin, ReducedImage):
                 # Compute the shifted uncertainty array
                 shiftedUncert = np.sqrt(
                     (fracRt*uncertRt)**2 +
-                    (fracLf*sigLf)**2
+                    (fracLf*uncertLf)**2
                 )
 
         # Now fill in the shifted arrays
@@ -865,9 +997,7 @@ class ReducedScience(ImageNumericsMixin, ReducedImage):
         elif dx < 0:
             shiftedData[:,(nx-fillX-1):nx] = padding
 
-        # # Place the final result in the arr attribute
-        # self.arr = shiftArr
-
+        # Place the final result in the fullData attribute
         if self._BaseImage__fullData.uncertainty is not None:
             # Now fill in the shifted arrays
             if dx > 0:
@@ -1198,278 +1328,6 @@ class ReducedScience(ImageNumericsMixin, ReducedImage):
     #                 # If no sigArr variable was found, then simply skip that section
     #                 pass
 
-    def rebin(self, nx, ny, total=False):
-        # Extend the rebin method to update the WCS
-        # Start by applying the basic rebin method
-        outImg = super(ReducedScience, self).rebin(nx, ny, total=total)
-
-        # Extract the shape and rebinning properties
-        ny1, nx1 = self.shape
-        dxdy     = np.array([nx1/nx, ny1/ny])
-
-        if self.has_wcs:
-            # Now treat the WCS
-            # Recompute the CRPIX and place them in the header
-            CRPIX1, CRPIX2 = self.wcs.wcs.crpix/dxdy
-
-            outImg.header['CRPIX1'] = CRPIX1
-            outImg.header['CRPIX2'] = CRPIX2
-
-            # Grab the CD matrix
-            if self.wcs.wcs.has_cd():
-                # Grab the cd matrix and modify it by the rebinning factor
-                cd = dxdy*self.wcs.wcs.cd
-
-            elif self.wcs.wcs.has_pc():
-                # Convert the pc matrix into a cd matrix
-                cd = dxdy*self.wcs.wcs.cdelt*self.wcs.wcs.pc
-
-                # Delete the PC matrix so that it can be replaced with a CD matrix
-                del outImg.header['PC*']
-
-            else:
-                raise ValueError('`wcs` does not include proper astrometry')
-
-            # Loop through the CD values and replace them with updated values
-            for i, row in enumerate(cd):
-                for j, cdij in enumerate(row):
-                    key = 'CD' + '_'.join([str(i+1), str(j+1)])
-                    outImg.header[key] = cdij
-
-            # TODO: Verify that the SIP polynomial treatment is correct
-            # (This may require some trial and error)
-
-            # Loop through all possible coefficients, starting at the 2nd order
-            # values, JUST above the linear (CD matrix) relations.
-            for AB in ['A', 'B']:
-                ABorderKey = '_'.join([AB, 'ORDER'])
-                # Check if there is a distortion polynomial to handle.
-                if ABorderKey in outImg.header:
-                    highestOrder = outImg.header[ABorderKey]
-                    # Loop through each order (2nd, 3rd, 4th, etc...)
-                    for o in range(2,highestOrder+1):
-                        # Loop through each of the horizontal axis order values
-                        for i in range(o+1):
-                            # Compute the vertical axis order value for THIS order
-                            j = o - i
-
-                            # Compute the correction factor given the rebinning
-                            # amount along each independent axis.
-                            ABcorrFact = (dxdy[0]**i)*(dxdy[1]**j)
-
-                            # Construct the key in which the SIP coeff is stored
-                            ABkey = '_'.join([AB, str(i), str(j)])
-
-                            # Update the SIP coefficient
-                            outImg.header[ABkey] = ABcorrFact*self.header[ABkey]
-
-                # Repeat this for the inverse transformation (AP_i_j, BP_i_j).
-                APBP = AB + 'P'
-                APBPorderKey = '_'.join([APBP, 'ORDER'])
-                if APBPorderKey in outImg.header:
-                    highestOrder = outImg.header[APBPorderKey]
-                    # Start at FIRST order this time...
-                    for o in range(1, highestOrder+1):
-                        for i in range(o+1):
-                            j = o - i
-
-                            # Skip the zeroth order (simply provided by CRVAL)
-                            if i == 0 and j == 0: continue
-
-                            # Compute the correction factor and apply it.
-                            APBPcorrFact = (dxdy[0]**(-i))*(dxdy[1]**(-j))
-                            APBPkey = '_'.join([APBP, str(i), str(j)])
-                            outImg.header[APBPkey] = APBPcorrFact*self.header[APBPkey]
-
-            # Store the updated WCS and return the image to the user
-            outImg._BaseImage__fullData = NDDataArray(
-                outImg.data,
-                uncertainty=outImg.uncertainty,
-                unit=outImg.unit,
-                wcs=WCS(outImg.header)
-            )
-
-        return outImg
-
-    # def frebin(self, nx1, ny1, total=False):
-    #     """
-    #     Rebins the image to an arbitrary size using a flux conservative method.
-    #
-    #     Parameters
-    #     ----------
-    #     nx, ny : int
-    #         The number of pixels desired in the output image along the
-    #         horizontal axis (nx) and the vertical axis (ny).
-    #
-    #     total : bool
-    #         If true, then the output image will have the same number of counts
-    #         as the input image.
-    #     """
-    #
-    #     # TODO: rewrite this for the new ReducedScience user interface
-    #     raise NotImplementedError
-    #
-    #     # First test for the trivial case
-    #     ny, nx = self.shape
-    #     if (nx == nx1) and (ny == ny1):
-    #         if copy:
-    #             return self.copy()
-    #         else:
-    #             return
-    #
-    #     # Compute the pixel ratios of upsampling and down sampling
-    #     xratio, yratio = np.float(nx1)/np.float(nx), np.float(ny1)/np.float(ny)
-    #     pixRatio       = np.float(xratio*yratio)
-    #     aspect         = yratio/xratio         #Measures change in aspect ratio.
-    #
-    #     ###
-    #     # TODO: if dealing with integers, then simply pass to the REBIN method
-    #     ###
-    #     if ((nx % nx1) == 0) and ((ny % ny1) == 0):
-    #         # Handle integer downsampling
-    #         # Get the new shape for the array and compute the rebinning shape
-    #         sh = (ny1, ny//ny1,
-    #               nx1, nx//nx1)
-    #
-    #         # Make a copy of the array before any manipulation
-    #         tmpArr = (self.data.copy()).astype(np.float)
-    #
-    #         # Perform the actual rebinning
-    #         rebinArr = tmpArr.reshape(sh).mean(-1).mean(1)
-    #
-    #         # Check if total flux conservation was requested
-    #         if total:
-    #             # Re-normalize by pixel area ratio
-    #             rebinArr /= pixRatio
-    #
-    #     elif ((nx1 % nx) == 0) and ((ny1 % ny) == 0):
-    #         # Handle integer upsampling
-    #         # Make a copy of the array before any manipulation
-    #         tmpArr = (self.data.copy()).astype(np.float)
-    #
-    #         # Perform the actual rebinning
-    #         rebinArr   = np.kron(tmpArr, np.ones((ny1//ny, nx1//nx)))
-    #
-    #         # Check if total flux conservation was requested
-    #         if total:
-    #             # Re-normalize by pixel area ratio
-    #             rebinArr /= pixRatio
-    #
-    #     else:
-    #         # Handle the cases of non-integer rebinning
-    #         # Make a copy of the array before any manipulation
-    #         tmpArr = np.empty((ny1, nx), dtype=np.float)
-    #
-    #         # Loop along the y-axis
-    #         ybox, xbox = np.float(ny)/np.float(ny1), np.float(nx)/np.float(nx1)
-    #         for i in range(ny1):
-    #             # Define the boundaries of this box
-    #             rstart = i*ybox
-    #             istart = np.int(rstart)
-    #             rstop  = rstart + ybox
-    #             istop  = np.int(rstop) if (np.int(rstop) < (ny - 1)) else (ny - 1)
-    #             frac1  = rstart - istart
-    #             frac2  = 1.0 - (rstop - istop)
-    #
-    #             # Compute the values in each box
-    #             if istart == istop:
-    #                 tmpArr[i,:] = (1.0 - frac1 - frac2)*self.arr[istart, :]
-    #             else:
-    #                 tmpArr[i,:] = (np.sum(self.arr[istart:istop+1, :], axis=0)
-    #                                - frac1*self.arr[istart, :]
-    #                                - frac2*self.arr[istop, :])
-    #
-    #         # Transpose tmpArr and prepare to loop along other axis
-    #         tmpArr = tmpArr.T
-    #         result = np.empty((nx1, ny1))
-    #
-    #         # Loop along the x-axis
-    #         for i in range(nx1):
-    #             # Define the boundaries of this box
-    #             rstart = i*xbox
-    #             istart = np.int(rstart)
-    #             rstop  = rstart + xbox
-    #             istop  = np.int(rstop) if (np.int(rstop) < (nx - 1)) else (nx - 1)
-    #             frac1  = rstart - istart
-    #             frac2  = 1.0 - (rstop - istop)
-    #
-    #             # Compute the values in each box
-    #             if istart == istop:
-    #                 result[i,:] = (1.0 - frac1 - frac2)*tmpArr[istart, :]
-    #             else:
-    #                 result[i,:] = (np.sum(tmpArr[istart:istop+1, :], axis=0)
-    #                                - frac1*tmpArr[istart, :]
-    #                                - frac2*tmpArr[istop, :])
-    #
-    #         # Transpose the array back to its proper numpy style shape
-    #         rebinArr = result.T
-    #
-    #         # Check if total flux conservation was requested
-    #         if not total:
-    #             rebinArr *= pixRatio
-    #
-    #         # Check if there is a header needing modification
-    #         outHead = self.header.copy()
-    #
-    #         # Update the NAXIS values
-    #         outHead['NAXIS1'] = nx1
-    #         outHead['NAXIS2'] = ny1
-    #
-    #         # Update the CRPIX values
-    #         outHead['CRPIX1'] = (self.header['CRPIX1'] + 0.5)*xratio - 0.5
-    #         outHead['CRPIX2'] = (self.header['CRPIX2'] + 0.5)*yratio - 0.5
-    #         if self.wcs.wcs.has_cd():
-    #             # Attempt to use CD matrix corrections, first
-    #             # Apply updates to CD valus
-    #             thisCD = self.wcs.wcs.cd
-    #             # TODO set CDELT value properly in the "astrometry" step
-    #             outHead['CD1_1'] = thisCD[0,0]/xratio
-    #             outHead['CD1_2'] = thisCD[0,1]/yratio
-    #             outHead['CD2_1'] = thisCD[1,0]/xratio
-    #             outHead['CD2_2'] = thisCD[1,1]/yratio
-    #         elif self.wcs.wcs.has_pc():
-    #             # Apply updates to CDELT valus
-    #             outHead['CDELT1'] = outHead['CDELT1']/xratio
-    #             outHead['CDELT2'] = outHead['CDELT2']/yratio
-    #
-    #             # Adjust the PC matrix if non-equal plate scales.
-    #             # See equation 187 in Calabretta & Greisen (2002)
-    #             if aspect != 1.0:
-    #                 outHead['PC1_1'] = outHead['PC1_1']
-    #                 outHead['PC2_2'] = outHead['PC2_2']
-    #                 outHead['PC1_2'] = outHead['PC1_2']/aspect
-    #                 outHead['PC2_1'] = outHead['PC2_1']*aspect
-    #     else:
-    #         # If no header exists, then buil a basic one
-    #         keywords = ['NAXIS2', 'NAXIS1']
-    #         values   = (ny1, nx1)
-    #         headDict = dict(zip(keywords, values))
-    #         outHead  = fits.Header(headDict)
-    #
-    #     # Reread the WCS from the output header
-    #     outWCS = WCS(outHead)
-    #
-    #     # If a copy was requested, then return a copy of the original image
-    #     # with a newly rebinned array
-    #     if outWCS.has_celestial:
-    #         outWCS = outWcs
-    #     else:
-    #         outWCS = None
-    #
-    #     outImg._BaseImage__fullData = NDDataArray(
-    #         rebinArr,
-    #         uncertainty=rebinUncert,
-    #         unit=outImg.unit
-    #          wcs=outWCS
-    #     )
-    #     outImg._BaseImage__header   = outHead
-    #     outBinning = (xratio*outImg.binning[0],
-    #                   yratio*outImg.binning[1])
-    #     outImg._dictionary_to_properties({'binning': outBinning})
-    #     outImg._properties_to_header()
-    #
-    #     return outImg
-
     def gradient(self, kernel='sobel'):
         """
         Computes the gradient (Gx, Gy) of the image.
@@ -1528,8 +1386,9 @@ class ReducedScience(ImageNumericsMixin, ReducedImage):
         if not self.has_wcs:
             raise AttributeError('Image does not have an astrometric solution defined.')
 
-        # Transform coordinates to pixel positions
-        x, y = coords.to_pixel(self.wcs)
+        # Transform coordinates to pixel positions (I was hoping to use the SIP
+        # polynomials at this point, but that seems to be causing errors!)
+        x, y = self.wcs.wcs_world2pix(coords.ra, coords.dec, 0)
 
         # Make sure that x and y are at least one dimension long
         if x.size == 1:
@@ -1615,31 +1474,6 @@ class ReducedScience(ImageNumericsMixin, ReducedImage):
 
         return outImg
 
-    # def fix_astrometry(self):
-    #     """This ensures that the CDELT values and PC matrix are properly set."""
-    #
-    #     # Check if there is a header in this image
-    #     if self.has_wcs:
-    #         pix_scales = self.pixel_scales
-    #         if len(self.header['CDELT*']) > 0:
-    #             # If there are CDELT values,
-    #             if ((pix_scales[0] != self.header['CDELT1']) or
-    #                 (pix_scales[1] != self.header['CDELT2'])):
-    #                 # and if they are not ACTUALLY set to the plate scales,
-    #                 # then update the astrometry keyword values
-    #                 CDELT1p = pix_scales[0]
-    #                 CDELT2p = pix_scales[1]
-    #
-    #                 # Update the header values
-    #                 self.header['CDELT1'] = CDELT1p
-    #                 self.header['CDELT2'] = CDELT2p
-    #                 self.header['PC1_1']  = self.header['PC1_1']/CDELT1p
-    #                 self.header['PC1_2']  = self.header['PC1_2']/CDELT1p
-    #                 self.header['PC2_1']  = self.header['PC2_1']/CDELT2p
-    #                 self.header['PC2_2']  = self.header['PC2_2']/CDELT2p
-    #     else:
-    #         raise ValueError('No header in this imagae')
-
     def clear_astrometry(self):
         """Delete the header values pertaining to the astrometry."""
 
@@ -1695,7 +1529,7 @@ class ReducedScience(ImageNumericsMixin, ReducedImage):
 
         # Update the image center coordinates
         yc, xc  = 0.5*np.array(self.shape)
-        ra, dec = wcs.all_pix2world([yc], [xc], 0)
+        ra, dec = wcs.all_pix2world([yc], [xc], 0, ra_dec_order=True)
         coord = SkyCoord(
             ra=ra,
             dec=dec,
@@ -1801,6 +1635,9 @@ class ReducedScience(ImageNumericsMixin, ReducedImage):
         # Overplot the sources
         ax.scatter(xs, ys, s=s, edgecolor=edgecolor, facecolor=facecolor, **kwargs)
 
-        # Force a redraw of the figure
-        # Force a redraw of the canvas
+        # Force a redraw of the figure canvas
         fig = self.figure.canvas.draw()
+
+##################################
+### END OF SUBCLASSES          ###
+##################################

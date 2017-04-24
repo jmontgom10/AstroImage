@@ -45,9 +45,9 @@ import matplotlib as mpl
 import matplotlib.colors as mcol
 import matplotlib.pyplot as plt
 
-# Define which functions, classes, objects, etc... will be imported via the command
+# Define which functions, classes, objects, etc... will be imported via
 # >>> from .baseimage import *
-__all__ = ['BaseImage']
+# __all__ = []
 
 # Define a short helper class to create a class property
 class ClassProperty(property):
@@ -103,9 +103,10 @@ class BaseImage(object):
         'OVERSCANWIDTH': 'POSTSCAN',
         'RA': 'TELRA',
         'DEC': 'TELDEC',
-        # 'FRAME': 'RADESYS', # TODO: Eventually find a way to include this?
+        # TODO: Eventually find a way to include this?
+        # 'FRAME': 'RADESYS',
         'EXPTIME': 'EXPTIME',
-        'DATE': 'DATE-OBS',
+        'DATETIME': 'DATE-OBS',
         'OBSTYPE': 'OBSTYPE',
         'UNIT': 'BUNIT',
         'SCALEFACTOR': 'BSCALE',
@@ -118,6 +119,7 @@ class BaseImage(object):
         'binning',
         'data',
         'date',
+        'datetime',
         'dec',
         'dtype',
         'expTime',
@@ -130,6 +132,7 @@ class BaseImage(object):
         'obsType',
         'ra',
         'shape',
+        'time',
         'unit',
         'width'
     ]
@@ -195,13 +198,18 @@ class BaseImage(object):
 
         # Check which data type has been provided
         dtypes = (
-            np.dtype(np.byte),
+            np.dtype(np.uint8),
             np.dtype(np.int16),
             np.dtype(np.int32),
             np.dtype(np.int64),
             np.dtype(np.float32),
             np.dtype(np.float64)
         )
+
+        if dtype not in dtypes:
+            raise ValueError('{0} is not a permissible data type for fits images'.format(dtype))
+
+
         bitpixes = (8, 16, 32, 64, -32, -64)
         bitpixDict = dict(zip(dtypes, bitpixes))
 
@@ -259,7 +267,7 @@ class BaseImage(object):
             'ra': 'TELRA', \\
             'dec': 'TELDEC', \\
             'expTime': 'EXPTIME', \\
-            'date': 'DATE-OBS' \\
+            'datetime': 'DATE-OBS' \\
             }
         >>> BaseImage.set_headerKeywordDict(translation)
         >>> img = BaseImage('img.fits')
@@ -272,8 +280,8 @@ class BaseImage(object):
         of the BaseImage class.
 
         >>> from astroimage import BaseImage
-        >>> from astroimage import ScienceImage
-        >>> ScienceImage.set_headerKeywordDict(translation)
+        >>> from astroimage import reduced.ReducedScience
+        >>> ReducedScience.set_headerKeywordDict(translation)
         >>> BaseImage('img.fits')
         >>> print(img.airmass)
         1.43
@@ -527,8 +535,13 @@ class BaseImage(object):
             if not issubclass(type(thisHeader), fits.Header):
                 raise TypeError('`header` must be an astropy.io.fits.header.Header instance')
 
-            # If a header WAS found, then apply potential modifications to it
-            thisHeader = BaseImage._header_handler(thisHeader)
+            # Test if the current class has a header_handler defined.
+            # A header_handle should generally only be defined for the RawImage
+            # class (and then inherited by the subclasses).
+            if hasattr(self, '_header_handler'):
+                # If a header WAS found, then apply potential modifications to it
+                thisHeader = type(self)._header_handler(thisHeader)
+
         else:
             # If no header was provided, then generate a null header dictionary
             thisHeader = {}
@@ -672,10 +685,43 @@ class BaseImage(object):
         """The binning of the array read from the sensor"""
         return self.__binning
 
+    ### START OF DATETIME RELATED METHODS ###
+
+    @property
+    def datetime(self):
+        """The date and time of the observation as a datetime object"""
+        return self.__datetime
+
     @property
     def date(self):
-        """The date of the observation"""
-        return self.__date
+        """The date of the observation as a string"""
+        return self.datetime.date()
+
+    @property
+    def time(self):
+        """The time of the observation as a string"""
+        return self.datetime.time()
+
+    @property
+    def julianDate(self):
+        """The julian date of the observation as a float"""
+        # Compute proleptic Gregorian date (Number of days since 0001-01-01 AD)
+        prolepticGregorianDate = self.datetime.toordinal()
+
+        # Grab the time of this observation
+        tmpTime = self.time
+
+        # Compute the fraction of a day represented by the above time
+        fractionOfDay = (
+            (tmpTime.hour + (tmpTime.minute + (tmpTime.second/60.0))/60.0)/24.0
+        )
+
+        # Compute the julian date (including the fraction of a day)
+        julianDate = prolepticGregorianDate + fractionOfDay + 1721424.5
+
+        return julianDate
+
+    ### END OF DATETIME RELATED METHODS ###
 
     @property
     def dec(self):
@@ -693,6 +739,8 @@ class BaseImage(object):
     def expTime(self):
         """The exposure time of the image"""
         # !!!ASSUME THAT EXPOSURE TIME IS IN SECONDS!!!
+        if self.__expTime is None:
+            return None
         return self.__expTime * u.second
 
     @property
@@ -781,6 +829,8 @@ class BaseImage(object):
     def has_dimensionless_units(self):
         """A boolean flag for if the unit can be considered dimensionless"""
         # Check if this is an angle
+        if self.unit is None:
+            return True
         return self.unit.is_equivalent(u.dimensionless_unscaled)
 
     @property
@@ -1294,16 +1344,16 @@ class BaseImage(object):
         """
 
         # Build the description string from the instance properties
-        description = 'SUMMARY FOR     ' + str(self.filename) + '\n' + \
+        description = '\nSUMMARY FOR     ' + os.path.basename(str(self.filename)) + '\n' + \
         'Image Type:     ' + str(type(self).__name__) + '\n' + \
         'Instrument:     ' + str(self.instrument) + '\n' + \
         'Filter:         ' + str(self.filter) + '\n' + \
         '------------------------------------\n' + \
         'Airmass:        ' + str(self.airmass) + '\n' + \
         'Binning:        ' + str(self.binning[0]) + ' x ' + str(self.binning[1]) + '\n' + \
-        'UTC Obs Time:   ' + self.date.strftime('%Y-%m-%d   %H:%M:%S') + '\n' + \
-        '(RA, Dec):      ('+ str(self.ra) + ', ' + str(self.dec) + ')\n' + \
-        'Exposure Time:  ' + str(self.expTime) + ' seconds\n' + \
+        'UTC Obs Time:   ' + self.datetime.strftime('%Y-%m-%d   %H:%M:%S') + '\n' + \
+        '(RA, Dec):      ('+ self.ra.to_string(u.h) + ', ' + self.dec.to_string(u.deg) + ')\n' + \
+        'Exposure Time:  ' + str(self.expTime) + '\n' + \
         'Image Size:     ' + str(self.width) + ' x ' + str(self.height) + '\n' + \
         'Units:          ' + str(self.unit)
 
@@ -1390,16 +1440,38 @@ class BaseImage(object):
         else:
             self.__obsType = None
 
-        if 'date' in propDict:
+        if 'datetime' in propDict:
             # TODO: use regular expressions (re module) to extract date/time
-            date = propDict['date']
-            if type(date) is not str:
-                raise TypeError('`date` property must be a string')
-            self.__date = datetime.strptime(date, '%Y-%m-%dT%H:%M:%S.%f')
+            datetimeStr = propDict['datetime']
+            if type(datetimeStr) is not str:
+                raise TypeError('`datetime` property must be a string')
+
+            # Split the datetime string into HH:MM:SS
+            splitDatetimeStr = datetimeStr.split(':')
+
+            # Grab the seconds part of the datetime string
+            secondStr = splitDatetimeStr[-1]
+
+            # If there are no miliseconds, add ".000" miliseconds.
+            if '.' not in secondStr:
+                # Append a milisecond string component
+                secondStr += '.000'
+
+                # Replace the last element of the datetime string
+                splitDatetimeStr[-1] = secondStr
+
+                # Recombine the elements of the datetime string
+                datetimeStr  = ':'.join(splitDatetimeStr)
+
+            # Convert datetime string into a datetime object
+            self.__datetime = datetime.strptime(
+                datetimeStr,
+                '%Y-%m-%dT%H:%M:%S.%f'
+            )
         else:
             # Set the current date-time as the date value
-            nowDateStr = datetime.utcnow()
-            self.__date = nowDateStr
+            nowDatetime = datetime.utcnow()
+            self.__datetime = nowDatetime
 
         if 'airmass' in propDict:
             try:
@@ -1426,7 +1498,7 @@ class BaseImage(object):
 
             self.__centerCoord = coord
         else:
-            self.__centerCoord  = None
+            self.__centerCoord  = SkyCoord(0, 0, unit=u.deg)
 
         # if 'ra' in propDict:
         #     try:
@@ -1540,16 +1612,15 @@ class BaseImage(object):
                 del self.__header[obsTypeKey]
             except: pass
 
-        if self.date is not None:
+        if self.datetime is not None:
             try:
-                dateKey = self.headerKeywordDict['DATE']
-                # TODO: Perform the reverse translation
-                # TODO: use regular expressions (re module) to extract date/time
-                self.__header[dateKey] = str(self.date).replace('  ', 'T')
+                dateKey = self.headerKeywordDict['DATETIME']
+                # TODO: use regular expressions (re module) to extract date/time?
+                self.__header[dateKey] = self.datetime.isoformat()
             except: pass
         else:
             try:
-                dateKey = self.headerKeywordDict['DATE']
+                dateKey = self.headerKeywordDict['DATETIME']
                 del self.__header[dateKey]
             except: pass
 
@@ -1589,7 +1660,7 @@ class BaseImage(object):
         if self.expTime is not None:
             try:
                 expTimeKey = self.headerKeywordDict['EXPTIME']
-                self.__header[expTimeKey] = self.expTime
+                self.__header[expTimeKey] = self.expTime.to(u.s).value
             except: pass
         else:
             try:
@@ -1682,8 +1753,10 @@ class BaseImage(object):
 
         # Build the converted output uncertainty
         if self._BaseImage__fullData.uncertainty is not None:
-            outUncert = self.uncertainty.astype(dtype1)
+            outUncert = self._BaseImage__fullData.uncertainty.array.astype(dtype1)
             outUncert = StdDevUncertainty(outUncert)
+        else:
+            outUncert = None
 
         # Construct a new, recast, data structure
         outImg._BaseImage__fullData = NDDataArray(
@@ -1813,7 +1886,7 @@ class BaseImage(object):
             filename = self.filename
 
         # Check if the explicitly provided filename is a string
-        if type(filename) is not str:
+        if not issubclass(type(filename), str):
             raise TypeError('`filename` must be a string')
 
         # If a data type was specified, recast output data into that format
@@ -1829,7 +1902,7 @@ class BaseImage(object):
         outImg._properties_to_header()
 
         # Extract the HDU data
-        HDUs = outImg._build_HDUs(dtype)
+        HDUs = outImg._build_HDUs()
 
         # Build the final output HDUlist
         HDUlist = fits.HDUList(HDUs)
@@ -1839,128 +1912,126 @@ class BaseImage(object):
 
         return None
 
-    def rebin(self, nx, ny, total=False):
-        """
-        Rebins the image to have a specified shape.
-
-        Parameters
-        ----------
-        nx, ny: int
-            The target number of pixels along the horizontal (nx) and vertical
-            (ny) axes.
-
-        total : bool, optional, default: False
-            If set to true, then returned array is total of the binned pixels
-            rather than the average.
-
-        Returns
-        -------
-        outImg : `BaseImage` (or subclass) or None
-            If copy was set to True, then a rebinned copy of the original image
-            is returned. Otherwise None is returned and the original image is
-            rebinned in place.
-        """
-        # Grab the shape of the initial array
-        ny0, nx0 = self.shape
-
-        # TODO: Catch the case of upsampling along one axis but downsampling
-        # along the other. This should not be possible!
-
-        # Test for improper result shape
-        goodX = ((nx0 % nx) == 0) or ((nx % nx0) == 0)
-        goodY = ((ny0 % ny) == 0) or ((ny % ny0) == 0)
-        if not (goodX and goodY):
-            raise ValueError('Result dimensions must be integer factor of original dimensions')
-
-        # First test for the trivial case
-        if (nx0 == nx) and (ny0 == ny):
-            return self.copy()
-
-        # Compute the pixel ratios of upsampling and down sampling
-        xratio, yratio = np.float(nx)/np.float(nx0), np.float(ny)/np.float(ny0)
-        pixRatio       = np.float(xratio*yratio)
-        aspect         = yratio/xratio         #Measures change in aspect ratio.
-
-        if ((nx0 % nx) == 0) and ((ny0 % ny) == 0):
-            # Handle integer downsampling
-            # Get the new shape for the array and compute the rebinning shape
-            sh = (ny, ny0//ny,
-                  nx, nx0//nx)
-
-            # Computed weighted rebinning
-            rebinArr = (self.data.reshape(sh).sum(-1).sum(1))
-
-            # Check if total flux conservation was requested.
-            # If not, then multiply by the pixel size ratio.
-            if not total: rebinArr *= pixRatio
-
-        elif ((nx % nx0) == 0) and ((ny % ny0) == 0):
-            # Handle integer upsampling
-            rebinArr = np.kron(
-                self.data,
-                np.ones((ny//ny0, nx//nx0))
-            )
-
-            # Check if total flux conservation was requested.
-            # If it was, then divide by the pixel size ratio.
-            if total: rebinArr /= pixRatio
-
-        # Compute the output uncertainty
-        if self._BaseImage__fullData.uncertainty is not None:
-            selfVariance = (self.uncertainty)**2
-            if ((nx0 % nx) == 0) and ((ny0 % ny) == 0):
-                # Handle integer downsampling
-                outVariance = selfVariance.reshape(sh).sum(-1).sum(1)
-
-                # Check if total flux conservation was requested.
-                # If not, then multiply by the pixel size ratio.
-                if not total: outVariance *= pixRatio
-
-            elif ((nx % nx0) == 0) and ((ny % ny0) == 0):
-                # Handle integer upsampling
-                outVariance = np.kron(
-                    selfVariance,
-                    np.ones((ny//ny0, nx//nx0))
-                )
-
-                # Check if total flux conservation was requested.
-                # If not, then divide by the pixel size ratio.
-                if total: outVariance /= pixRatio
-
-            # Convert the uncertainty into the correct class for NDDataArray
-            outUncert = StdDevUncertainty(np.sqrt(outVariance))
-        else:
-            # Handle the no-uncertainty situation
-            outUncert = None
-
-        # Construct the output NDDataArray
-        outData = NDDataArray(
-            rebinArr,
-            uncertainty=outUncert,
-            unit=self._BaseImage__fullData.unit,
-            wcs=self._BaseImage__fullData.wcs
-        )
-
-        # Return a copy of the image with a rebinned array
-        outImg = self.copy()
-        outImg._BaseImage__fullData = outData
-
-        # Update the header values
-        outHead = self.header.copy()
-        outHead['NAXIS1'] = nx
-        outHead['NAXIS2'] = ny
-
-        # Store the header in the output image
-        outImg._BaseImage__header = outHead
-
-        # Update the binning attribute to match the new array
-        outImg._BaseImage__binning = (
-            outImg.binning[0]/xratio,
-            outImg.binning[1]/yratio
-        )
-
-        # Return the updated image object
-        return outImg
+    # def rebin(self, nx, ny, total=False):
+    #     """
+    #     Rebins the image to have a specified shape.
+    #
+    #     Parameters
+    #     ----------
+    #     nx, ny: int
+    #         The target number of pixels along the horizontal (nx) and vertical
+    #         (ny) axes.
+    #
+    #     total : bool, optional, default: False
+    #         If set to true, then returned image is total of the binned pixels
+    #         rather than the average.
+    #
+    #     Returns
+    #     -------
+    #     outImg : `BaseImage` (or subclass)
+    #         The rebinned image instance.
+    #     """
+    #     # Grab the shape of the initial array
+    #     ny0, nx0 = self.shape
+    #
+    #     # TODO: Catch the case of upsampling along one axis but downsampling
+    #     # along the other. This should not be possible!
+    #
+    #     # Test for improper result shape
+    #     goodX = ((nx0 % nx) == 0) or ((nx % nx0) == 0)
+    #     goodY = ((ny0 % ny) == 0) or ((ny % ny0) == 0)
+    #     if not (goodX and goodY):
+    #         raise ValueError('Result dimensions must be integer factor of original dimensions')
+    #
+    #     # First test for the trivial case
+    #     if (nx0 == nx) and (ny0 == ny):
+    #         return self.copy()
+    #
+    #     # Compute the pixel ratios of upsampling and down sampling
+    #     xratio, yratio = np.float(nx)/np.float(nx0), np.float(ny)/np.float(ny0)
+    #     pixRatio       = np.float(xratio*yratio)
+    #     aspect         = yratio/xratio         #Measures change in aspect ratio.
+    #
+    #     if ((nx0 % nx) == 0) and ((ny0 % ny) == 0):
+    #         # Handle integer downsampling
+    #         # Get the new shape for the array and compute the rebinning shape
+    #         sh = (ny, ny0//ny,
+    #               nx, nx0//nx)
+    #
+    #         # Computed weighted rebinning
+    #         rebinArr = (self.data.reshape(sh).sum(-1).sum(1))
+    #
+    #         # Check if total flux conservation was requested.
+    #         # If not, then multiply by the pixel size ratio.
+    #         if not total: rebinArr *= pixRatio
+    #
+    #     elif ((nx % nx0) == 0) and ((ny % ny0) == 0):
+    #         # Handle integer upsampling
+    #         rebinArr = np.kron(
+    #             self.data,
+    #             np.ones((ny//ny0, nx//nx0))
+    #         )
+    #
+    #         # Check if total flux conservation was requested.
+    #         # If it was, then divide by the pixel size ratio.
+    #         if total: rebinArr /= pixRatio
+    #
+    #     # Compute the output uncertainty
+    #     if self._BaseImage__fullData.uncertainty is not None:
+    #         selfVariance = (self.uncertainty)**2
+    #         if ((nx0 % nx) == 0) and ((ny0 % ny) == 0):
+    #             # Handle integer downsampling
+    #             outVariance = selfVariance.reshape(sh).sum(-1).sum(1)
+    #
+    #             # Check if total flux conservation was requested.
+    #             # If not, then multiply by the pixel size ratio.
+    #             if not total: outVariance *= pixRatio
+    #
+    #         elif ((nx % nx0) == 0) and ((ny % ny0) == 0):
+    #             # Handle integer upsampling
+    #             outVariance = np.kron(
+    #                 selfVariance,
+    #                 np.ones((ny//ny0, nx//nx0))
+    #             )
+    #
+    #             # Check if total flux conservation was requested.
+    #             # If not, then divide by the pixel size ratio.
+    #             if total: outVariance /= pixRatio
+    #
+    #         # Convert the uncertainty into the correct class for NDDataArray
+    #         outUncert = StdDevUncertainty(np.sqrt(outVariance))
+    #     else:
+    #         # Handle the no-uncertainty situation
+    #         outUncert = None
+    #
+    #     # Construct the output NDDataArray
+    #     outData = NDDataArray(
+    #         rebinArr,
+    #         uncertainty=outUncert,
+    #         unit=self._BaseImage__fullData.unit,
+    #         wcs=self._BaseImage__fullData.wcs
+    #     )
+    #
+    #     # Return a copy of the image with a rebinned array
+    #     outImg = self.copy()
+    #     outImg._BaseImage__fullData = outData
+    #
+    #     # Update the header values
+    #     outHead = self.header.copy()
+    #     outHead['NAXIS1'] = nx
+    #     outHead['NAXIS2'] = ny
+    #
+    #     # Store the header in the output image
+    #     outImg._BaseImage__header = outHead
+    #
+    #     # Update the binning attribute to match the new array
+    #     outImg._BaseImage__binning = (
+    #         outImg.binning[0]/xratio,
+    #         outImg.binning[1]/yratio
+    #     )
+    #
+    #     # Return the updated image object
+    #     return outImg
 
     @lru_cache()
     def sigma_clipped_stats(self, nsamples=1000, **kwargs):
@@ -2071,7 +2142,7 @@ class BaseImage(object):
         # Figure out which major tick spacing provides the FEWEST ticks
         # but greater than 3
         y_cen, x_cen    = 0.5*ny, 0.5*nx
-        RA_cen, Dec_cen = self.wcs.all_pix2world([x_cen], [y_cen], 0)
+        RA_cen, Dec_cen = self.wcs.all_pix2world([x_cen], [y_cen], 0, ra_dec_order=True)
 
         # Compute which spacing, format, minorTicksFreq to select for RA axis
         hours2degrees = 15.0
@@ -2233,7 +2304,9 @@ class BaseImage(object):
                 )
 
     def show(self, axes=None, cmap='viridis', vmin=None, vmax=None,
-            origin='lower', noShow=False, stretch='linear', **kwargs):
+            origin='lower', interpolation='nearest', noShow=False,
+            stretch='linear', **kwargs):
+        #TODO: add the 'interpolation' description to docstring (if I like it..)
         """
         Displays an interactive image to the user.
 
@@ -2321,8 +2394,8 @@ class BaseImage(object):
             axes.spines[axis].set_linewidth(4)
 
         # Finally display the image to the user!
-        image = axes.imshow(self.data, origin=origin, norm = norm,
-                           cmap=cmap, **kwargs)
+        image = axes.imshow(self.data, origin=origin, norm=norm, cmap=cmap,
+            interpolation=interpolation, **kwargs)
 
         # Display the image to the user, if requested
         if not noShow:

@@ -50,20 +50,20 @@ head1 = fits.Header()
 # Write the basic unit tests
 
 def test_has_angle_units():
-    img1 = ai.BaseImage(arr1, properties={'unit':'deg'})
+    img1 = ai.baseimage.BaseImage(arr1, properties={'unit':'deg'})
 
     assert img1.has_angle_units
 
-    img1 = ai.BaseImage(arr1, properties={'unit':'rad'})
+    img1 = ai.baseimage.BaseImage(arr1, properties={'unit':'rad'})
 
     assert img1.has_angle_units
 
-    img1 = ai.BaseImage(arr1, properties={'unit':'arcsec'})
+    img1 = ai.baseimage.BaseImage(arr1, properties={'unit':'arcsec'})
 
     assert img1.has_angle_units
 
 def test_has_dimensionless_units():
-    img1 = ai.BaseImage(arr1, properties={'unit':'pc'})
+    img1 = ai.baseimage.BaseImage(arr1, properties={'unit':'pc'})
     img2 = img1.convert_units_to('m')
 
     img3 = img2/img1
@@ -71,19 +71,19 @@ def test_has_dimensionless_units():
     assert img3.has_dimensionless_units
 
 def test_convert_units_to():
-    img1 = ai.BaseImage(arr1, properties={'unit':'deg'})
+    img1 = ai.baseimage.BaseImage(arr1, properties={'unit':'deg'})
     img2 = img1.convert_units_to('arcsec')
 
     assert (np.abs(img2.data/(arr1*3600) - 1.0) < 1e-4).all()
 
-    img1 = ai.BaseImage(arr1, properties={'unit':'pc'})
+    img1 = ai.baseimage.BaseImage(arr1, properties={'unit':'pc'})
     img2 = img1.convert_units_to('m')
 
     assert (np.abs(img2.data/((arr1*u.pc).to(u.m)).value - 1.0) < 1e-4).all()
 
 def test_pos():
     # Build test images
-    img1 = ai.BaseImage(arr1)
+    img1 = ai.baseimage.BaseImage(arr1)
 
     # Positive test image
     img2 = +img1
@@ -91,12 +91,12 @@ def test_pos():
     # Positive numpy arrays
     res_a = +arr1
 
-    # Assert that the numpy and ai.BaseImage yield the same result
+    # Assert that the numpy and BaseImage yield the same result
     assert (img2.data == res_a).all()
 
 def test_neg():
     # Build test images
-    img1 = ai.BaseImage(arr1)
+    img1 = ai.baseimage.BaseImage(arr1)
 
     # Negate the test image
     img2 = -img1
@@ -104,12 +104,12 @@ def test_neg():
     # Negate the numpy arrays
     res_a = -arr1
 
-    # Assert that the numpy and ai.BaseImage yield the same result
+    # Assert that the numpy and BaseImage yield the same result
     assert (img2.data == res_a).all()
 
 def test_abs():
     # Build test images
-    img1 = ai.BaseImage(arr3)
+    img1 = ai.baseimage.BaseImage(arr3)
 
     # Absolute value test image
     img2 = np.abs(img1)
@@ -117,13 +117,13 @@ def test_abs():
     # Absolute value numpy arrays
     res_a = np.abs(arr3)
 
-    # Assert that the numpy and ai.BaseImage yield the same result
+    # Assert that the numpy and BaseImage yield the same result
     assert (img2.data == res_a).all()
 
 def test_add():
     # Build test images
-    img1 = ai.BaseImage(arr1)
-    img2 = ai.BaseImage(arr2)
+    img1 = ai.baseimage.BaseImage(arr1)
+    img2 = ai.baseimage.BaseImage(arr2)
 
     # Add the images together
     img3a = img1 + img2
@@ -133,7 +133,7 @@ def test_add():
     res_a = arr1 + arr2
     res_b = arr2 + arr1
 
-    # Assert that the numpy and ai.BaseImage yield the same result
+    # Assert that the numpy and BaseImage yield the same result
     assert (img3a.data == res_a).all()
     assert (img3b.data == res_b).all()
 
@@ -144,8 +144,8 @@ def test_add():
 
 def test_subtract():
     # Build test images
-    img1 = ai.BaseImage(arr1)
-    img2 = ai.BaseImage(arr2)
+    img1 = ai.baseimage.BaseImage(arr1)
+    img2 = ai.baseimage.BaseImage(arr2)
 
     # Subtract the images
     img3a = img1 - img2
@@ -155,7 +155,7 @@ def test_subtract():
     res_a = arr1 - arr2
     res_b = arr2 - arr1
 
-    # Assert that the numpy and ai.BaseImage yield the same result
+    # Assert that the numpy and BaseImage yield the same result
     assert (img3a.data == res_a).all()
     assert (img3b.data == res_b).all()
 
@@ -166,8 +166,8 @@ def test_subtract():
 
 def test_multiply():
     # Build test images
-    img1 = ai.BaseImage(arr1)
-    img2 = ai.BaseImage(arr2)
+    img1 = ai.baseimage.BaseImage(arr1)
+    img2 = ai.baseimage.BaseImage(arr2)
 
     # Multiply the images together
     img3a = img1 * img2
@@ -177,7 +177,7 @@ def test_multiply():
     res_a = arr1 * arr2
     res_b = arr2 * arr1
 
-    # Assert that the numpy and ai.BaseImage yield the same result
+    # Assert that the numpy and BaseImage yield the same result
     assert (img3a.data == res_a).all()
     assert (img3b.data == res_b).all()
 
@@ -188,8 +188,8 @@ def test_multiply():
 
 def test_divide():
     # Build test images
-    img1 = ai.BaseImage(arr1)
-    img2 = ai.BaseImage(arr2)
+    img1 = ai.baseimage.BaseImage(arr1)
+    img2 = ai.baseimage.BaseImage(arr2)
 
     # Multiply the images together
     img3a = img1 / img2
@@ -199,7 +199,7 @@ def test_divide():
     res_a = arr1 / arr2
     res_b = arr2 / arr1
 
-    # Assert that the numpy and ai.BaseImage yield the same result
+    # Assert that the numpy and BaseImage yield the same result
     assert (img3a.data == res_a).all()
     assert (img3b.data == res_b).all()
 
@@ -210,7 +210,7 @@ def test_divide():
 
 def test_pow():
     # Build a test image
-    img1 = ai.BaseImage(arr1)
+    img1 = ai.baseimage.BaseImage(arr1)
 
     # Exponentiate the image
     img2 = img1**3
@@ -218,12 +218,12 @@ def test_pow():
     # Exponentiate the numpy array
     res_a = arr1**3
 
-    # Assert that the numpy and ai.BaseImage yield the same result
+    # Assert that the numpy and BaseImage yield the same result
     assert (img2.data == res_a).all()
 
 def test_astype():
     # Build the test image
-    img1 = ai.BaseImage(arr1)
+    img1 = ai.baseimage.BaseImage(arr1)
 
     # Check that the array and image data type agree
     assert_equal(img1.dtype,  arr1.dtype)
@@ -248,7 +248,7 @@ def test_copy():
         'ra': 4.123456,
         'units': 'electron',
     }
-    img1 = ai.BaseImage(arr1, properties=properties)
+    img1 = ai.baseimage.BaseImage(arr1, properties=properties)
     img2 = img1.copy()
     attList  = [
         'airmass',
@@ -281,78 +281,15 @@ def test_copy():
         except (AssertionError, ValueError):
             assert (np.array(a1) == np.array(a2)).all()
 
-def test_rebin():
-    # Initalize a basic image
-    img1 = ai.BaseImage(arr1, properties={'binning':(2,2)})
-
-    # Make a copy of that image
-    img2 = img1.copy()
-
-    # Set the binning along each axis
-    dy,  dx  = 3, 3
-    ny0, nx0 = img1.shape
-    ny,  nx  = ny0//dy, nx0//dx
-
-    # Perform the rebinning
-    img1a = img1.rebin(nx, ny, total=True)
-    img2a = img2.rebin(nx, ny, total=False)
-
-    # Compute the expected output
-    sh = (ny, dx,
-          nx, dy)
-
-    res1 = arr1.reshape(sh).sum(-1).sum(1)
-    res2 = res1/(dx*dy)
-
-    # Check if the output matches the expected result
-    assert (np.abs((img1a.data/res1) - 1.0) < 0.001).all()
-    assert (np.abs((img2a.data/res2) - 1.0) < 0.001).all()
-    assert_equal(img1a.binning, (2*dy, 2*dx))
-    assert_equal(np.sum(res1), np.sum(img1a.data))
-
-    ###
-    # Check an UPsampling problem
-    ###
-    # Initalize a basic image
-    img1 = ai.BaseImage(arr1, properties={'binning':(2,2)})
-
-    # Make a copy of that image
-    img2 = img1.copy()
-
-    # Set the binning along each axis
-    dy,  dx  = 0.5, 0.5
-    ny0, nx0 = img1.shape
-    ny,  nx  = np.int(ny0//dy), np.int(nx0//dx)
-
-    # Perform the rebinning
-    img1a = img1.rebin(nx, ny, total=True)
-    img2a = img2.rebin(nx, ny, total=False)
-
-    # Compute the expected output
-    sh = (ny, dx,
-          nx, dy)
-
-    res2 = np.kron(
-        arr1,
-        np.ones((ny//ny0, nx//nx0))
-    )
-    res1 = res2*(dx*dy)
-
-    # Check if the output matches the expected result
-    assert (np.abs((img1a.data/res1) - 1.0) < 0.001).all()
-    assert (np.abs((img2a.data/res2) - 1.0) < 0.001).all()
-    assert_equal(img1a.binning, (2*dy, 2*dx))
-    assert_equal(np.sum(res1), np.sum(img1a.data))
-
 def test_write():
     # Test whether the writing function is working
-    img1 = ai.BaseImage(arr1, uncertainty=arr2)
+    img1 = ai.baseimage.BaseImage(arr1, uncertainty=arr2)
 
     img1.write('img1.fits', clobber=True)
 
 def test_read():
     # Test whether reading in that previously written image works
-    img1 = ai.BaseImage.read('img1.fits')
+    img1 = ai.baseimage.BaseImage.read('img1.fits')
 
     # Test if the read in data matches the expected saved data
     assert (img1.data == arr1).all()

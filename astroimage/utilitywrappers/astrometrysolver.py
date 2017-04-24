@@ -10,7 +10,7 @@ from astropy.io import fits
 from astropy.wcs import WCS
 
 # AstroImage imports
-from .reducedscience import ReducedScience
+from ..reduced import ReducedScience
 
 # Define which functions, classes, objects, etc... will be imported via the command
 # >>> from imagestack import *
@@ -285,7 +285,7 @@ class AstrometrySolver(object):
         """
         # Construct the path to the newly created WCS file. The name of these
         # files is hardcoded into this class, so they are not variables.
-        destinationDirectory = os.path.dirname(self.image.filename)
+        destinationDirectory = os.path.dirname(str(self.image.filename))
         wcsPath              = os.path.join(destinationDirectory, 'tmp.wcs')
         axyPath              = os.path.join(destinationDirectory, 'tmp.axy')
 
@@ -326,7 +326,7 @@ class AstrometrySolver(object):
 
         # If the .fits file was marked as temporary, then delete it
         if temporaryFile:
-            if os.path.isfile(filePath): os.remove(fileToSolve)
+            if os.path.isfile(fileToSolve): os.remove(fileToSolve)
 
     def run(self, clobber=False):
         """

@@ -4,14 +4,15 @@ except ImportError:
     from distutils.core import setup
 
 config = {
-    'description': 'AstroImage is a class (with some utilities) for convenient acces of astronomical image data.',
+    'name': 'AstroImage',
+    'description': 'Astronomical image processing tools',
     'author': 'Jordan Montgomery',
     'url': 'https://github.com/jmontgom10/AstroImage',
     'download_url': 'https://github.com/jmontgom10/AstroImage/zipball/master',
     'author_email': 'jmontgom.10@gmail.com',
-    'version': '0.8',
+    'version': '0.85',
+    'python_requires': '>=3.3',
     'install_requires': [
-        # 'python >= 3.5',
         'nose >= 1.3',
         'astropy >= 1.3',
         'wcsaxes >= 0.6',
@@ -24,9 +25,12 @@ config = {
         'scikit-image >= 0.11',
         'scikit-learn >=0.18'
     ],
-    'packages': ['astroimage'],
+    'packages': [
+        'astroimage',
+        'astroimage.mixins',
+        'astroimage.utilitywrappers'
+    ],
     'scripts': [],
-    'name': 'astroimage'
 }
 
 setup(**config)

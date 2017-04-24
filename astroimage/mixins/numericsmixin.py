@@ -5,10 +5,63 @@ import numpy as np
 from astropy.nddata import NDDataArray, StdDevUncertainty
 import astropy.units as u
 
-class ImageNumericsMixin(object):
+# Import the astroimage base class
+from ..baseimage import BaseImage
+
+__all__ = ['NumericsMixin']
+
+class NumericsMixin(object):
     """
     A mixin class to handle common numerical methods for ReducedScience class
     """
+
+    def __mod__(self, other):
+        """Computes the modulus of the data against the provided value"""
+        # Grab the data if posible
+        if issubclass(type(other), BaseImage):
+            # Modulus another astroimage instance
+            otherData = other.convert_units_to(self.unit).data
+
+            # Grab the uncertainty of the other image if possible
+            if other.uncertainty is not None:
+                otherUncert = other.uncertainty
+            else:
+                otherUncert = 0.0
+        elif issubclass(type(other), u.Quantity):
+            # Modulus a Quantity instance
+            # Attempt to force these into the same units
+            try:
+                otherData = other.to(self.unit)
+            except:
+                raise
+
+            # Assume zero uncertainty
+            otherUncert = 0.0
+        elif (self.has_dimensionless_units
+            and issubclass(type(other),
+            (int, np.int8, np.int16, np.int32, np.int64,
+            float, np.float16, np.float32, np.float64))):
+            # Modulus a unitless scalar quantity (if image is unitless)
+            otherData = other
+
+            # Assume zero uncertainty
+            otherUncert = 0.0
+        else:
+            # Incompatible types and/or units
+            raise TypeError('Cannot take modulus of {0} with {1} units and {2}'.format(
+                type(self).__name__, str(self.unit), type(other).__name__))
+
+        # Attempt the modulus
+        outData   = (self.data*self.unit) % otherData
+        outUncert = np.sqrt(self.uncertainty**2 + otherUncert**2)
+
+        # Construct the output image
+        outImg = self.copy()
+        outImg.data = outData
+        outImg.uncertainty = outUncert
+
+        # Return the added image
+        return outImg
 
     ##################################
     ### START OF NUMERICAL METHODS ###
@@ -17,12 +70,12 @@ class ImageNumericsMixin(object):
     def rad2deg(self):
         '''Converts the image data values from radians to degrees'''
         if self.unit != u.rad: raise u.UnitError('Units are not currently radians')
-        return self.convert_units_to(u.deg, copy=True)
+        return self.convert_units_to(u.deg)
 
     def deg2rad(self):
         '''Converts the image data values from degrees to radians'''
         if self.unit != u.deg: raise u.UnitError('Units are not currently degrees')
-        return self.convert_units_to(u.rad, copy=True)
+        return self.convert_units_to(u.rad)
 
     def sin(self):
         '''Computes the sine of the image data values'''
@@ -34,7 +87,7 @@ class ImageNumericsMixin(object):
         selfData    = selfRadData.value
 
         # Propagate uncertainty if it exists
-        if self._BaseImage__fullData.uncertainty is not None:
+        if self.uncertainty is not None:
             selfRadUncert = (self.uncertainty*self.unit).to(u.rad)
             selfUncert    = selfRadUncert.value
             outUncert     = StdDevUncertainty(np.cos(selfData)*selfUncert)
@@ -43,7 +96,7 @@ class ImageNumericsMixin(object):
 
         # Compute the sine and propagated uncertainty
         outImg = self.copy()
-        outImg._BaseImage__fullData = NDDatArray(
+        outImg._BaseImage__fullData = NDDataArray(
             np.sin(selfData),
             uncertainty=outUncert,
             unit=u.dimensionless_unscaled,
@@ -62,7 +115,7 @@ class ImageNumericsMixin(object):
         selfData   = self.data
 
         # Propagate uncertainty if it exists
-        if self._BaseImage__fullData.uncertainty is not None:
+        if self.uncertainty is not None:
             selfUncert = self.uncertainty
             outUncert  = StdDevUncertainty(selfUncert/np.sqrt(1.0 + selfData))
         else:
@@ -89,7 +142,7 @@ class ImageNumericsMixin(object):
         selfData    = selfRadData.value
 
         # Propagate uncertainty if it exists
-        if self._BaseImage__fullData.uncertainty is not None:
+        if self.uncertainty is not None:
             selfRadUncert = (self.uncertainty*self.unit).to(u.rad)
             selfUncert    = selfRadUncert.value
             outUncert     = StdDevUncertainty(np.sin(selfData)*selfUncert)
@@ -98,7 +151,7 @@ class ImageNumericsMixin(object):
 
         # Compute the sine and store the propagated uncertainty
         outImg = self.copy()
-        outImg._BaseImage__fullData = NDDatArray(
+        outImg._BaseImage__fullData = NDDataArray(
             np.cos(selfData),
             uncertainty=outUncert,
             unit=u.dimensionless_unscaled,
@@ -117,13 +170,13 @@ class ImageNumericsMixin(object):
         selfData   = self.data
 
         # Propagate uncertainty if it exists
-        if self._BaseImage__fullData.uncertainty is not None:
+        if self.uncertainty is not None:
             selfUncert = self.uncertainty
             outUncert  = StdDevUncertainty(selfUncert/np.sqrt(1.0 + selfData))
         else:
             outUncert = None
 
-        # Compute the arcsin and store the propagated uncertainty
+        # Compute the arccos and store the propagated uncertainty
         outImg = self.copy()
         outImg._BaseImage__fullData = NDDataArray(
             np.arccos(selfData),
@@ -144,7 +197,7 @@ class ImageNumericsMixin(object):
         selfData    = selfRadData.value
 
         # Propagate uncertainty if it exists
-        if self._BaseImage__fullData.uncertainty is not None:
+        if self.uncertainty is not None:
             selfRadUncert = (self.uncertainty*self.unit).to(u.rad)
             selfUncert    = selfRadUncert.value
             outUncert     = StdDevUncertainty(selfUncert/(np.cos(selfData)**2))
@@ -153,7 +206,7 @@ class ImageNumericsMixin(object):
 
         # Compute the sine and store the propagated uncertainty
         outImg = self.copy()
-        outImg._BaseImage__fullData = NDDatArray(
+        outImg._BaseImage__fullData = NDDataArray(
             np.tan(selfData),
             uncertainty=outUncert,
             unit=u.dimensionless_unscaled,
@@ -172,13 +225,13 @@ class ImageNumericsMixin(object):
         selfData   = self.data
 
         # Propagate uncertainty if it exists
-        if self._BaseImage__fullData.uncertainty is not None:
+        if self.uncertainty is not None:
             selfUncert = self.uncertainty
             outUncert  = StdDevUncertainty(selfUncert/(1.0 + selfData**2))
         else:
             outUncert = None
 
-        # Compute the arcsin and store the propagated uncertainty
+        # Compute the arctan and store the propagated uncertainty
         outImg = self.copy()
         outImg._BaseImage__fullData = NDDataArray(
             np.arccos(selfData),
@@ -198,20 +251,20 @@ class ImageNumericsMixin(object):
         if issubclass(type(other), BaseImage):
             # Handle BaseImage (or subclass) instance
             if not other.has_dimensionless_units:
-                raise TypeError('Can only apply `arccos` function to dimensionless quantities')
+                raise TypeError('Can only apply `arctan` function to dimensionless quantities')
 
             otherData = other.data
 
             # Grab the uncertainty of the other image if possible
-            if other._BaseImage__fullData.uncertainty is not None:
-                otherUncert = other._BaseImage__fullData.uncertainty
+            if other.uncertainty is not None:
+                otherUncert = other.uncertainty
             else:
                 otherUncert = 0.0
 
         elif issubclass(type(other), u.Quantity):
             # Handle Quantity instance
             if not other.has_dimensionless_units:
-                raise TypeError('Can only apply `arccos` function to dimensionless quantities')
+                raise TypeError('Can only apply `arctan` function to dimensionless quantities')
 
             otherData   = other.value
 
@@ -231,16 +284,19 @@ class ImageNumericsMixin(object):
                 type(self).__name__, str(self.unit), type(other).__name__))
 
         # Grab the uncertainty of this image
-        if self._BaseImage__fullData.uncertainty is not None:
-            selfUncert = self._BaseImage__fullData.uncertainty
+        if self.uncertainty is not None:
+            selfUncert = self.uncertainty
         else:
             selfUncert = 0.0
+
+        # Grab the data
+        selfData = self.data
 
         # Compute the smart arctan2(x,y)
         outData = np.arctan2(selfData, otherData)
 
         # Check if the uncertainty is "zero"
-        if selfUncert > 0 or otherUncert > 0:
+        if np.all(selfUncert != 0) or np.all(otherUncert != 0):
             # Compute the propagated uncertainty
             # d/dx (arctan2(x,y)) = +x/(x^2 + y^2)
             # d/dy (arctan2(x,y)) = -y/(x^2 + y^2)
@@ -271,18 +327,24 @@ class ImageNumericsMixin(object):
         outData  = np.sqrt(selfData)
 
         # Propagate uncertainty if it exists
-        if self._BaseImage__fullData.uncertainty is not None:
+        if self.uncertainty is not None:
             selfUncert = self.uncertainty
             outUncert  = StdDevUncertainty(selfUncert/(2*outData))
         else:
             outUncert = None
 
-        # Compute the arcsin and store the propagated uncertainty
+        # Attempt to take the square root of the units
+        try:
+            outUnit = np.sqrt(u.Quantity(1, self.unit)).unit
+        except:
+            outUnit = u.dimensionless_unscaled
+
+        # Compute the sqare root and store the propagated uncertainty
         outImg = self.copy()
         outImg._BaseImage__fullData = NDDataArray(
             outData,
             uncertainty=outUncert,
-            unit=np.sqrt(self.unit),
+            unit=outUnit,
             wcs=self._BaseImage__fullData.wcs
         )
 
@@ -299,13 +361,13 @@ class ImageNumericsMixin(object):
         outData  = np.exp(selfData)
 
         # Propagate uncertainty if it exists
-        if self._BaseImage__fullData.uncertainty is not None:
+        if self.uncertainty is not None:
             selfUncert = self.uncertainty
             outUncert  = StdDevUncertainty(selfUncert*outData)
         else:
             outUncert = None
 
-        # Compute the arcsin and store the propagated uncertainty
+        # Compute the exponential and store the propagated uncertainty
         outImg = self.copy()
         outImg._BaseImage__fullData = NDDataArray(
             outData,
@@ -326,13 +388,13 @@ class ImageNumericsMixin(object):
         outData  = np.log(selfData)
 
         # Propagate uncertainty if it exists
-        if self._BaseImage__fullData.uncertainty is not None:
+        if self.uncertainty is not None:
             selfUncert = self.uncertainty
             outUncert  = StdDevUncertainty(selfUncert/selfData)
         else:
             outUncert = None
 
-        # Compute the arcsin and store the propagated uncertainty
+        # Compute the natural log and store the propagated uncertainty
         outImg = self.copy()
         outImg._BaseImage__fullData = NDDataArray(
             outData,
@@ -353,13 +415,13 @@ class ImageNumericsMixin(object):
         outData  = np.log10(selfData)
 
         # Propagate uncertainty if it exists
-        if self._BaseImage__fullData.uncertainty is not None:
+        if self.uncertainty is not None:
             selfUncert = self.uncertainty
             outUncert  = StdDevUncertainty(selfUncert/(selfData*np.log(10)))
         else:
             outUncert = None
 
-        # Compute the arcsin and store the propagated uncertainty
+        # Compute the base-10 log and store the propagated uncertainty
         outImg = self.copy()
         outImg._BaseImage__fullData = NDDataArray(
             outData,

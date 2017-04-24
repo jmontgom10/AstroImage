@@ -5,7 +5,6 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 # Core imports
 import copy
 import warnings
-from functools import lru_cache
 
 # Scipy imports
 import numpy as np
@@ -15,12 +14,11 @@ from astropy.nddata import NDDataArray
 
 # AstroImage imports
 from .baseimage import BaseImage, ClassProperty
-from .reducedimages import ReducedImage, MasterBias, MasterDark, MasterFlat
-from .reducedscience import ReducedScience
+from .reduced import MasterBias, MasterDark, MasterFlat, ReducedScience
 
-# Define which functions, classes, objects, etc... will be imported via the command
-# >>> from .rawimages import *
-__all__ = ['RawImage', 'RawBias', 'RawDark', 'RawFlat', 'RawScience']
+# Define which functions, classes, objects, etc... will be imported via
+# >>> from astroimage.images raw import *
+__all__ = ['RawBias', 'RawDark', 'RawFlat', 'RawScience']
 
 class RawImage(BaseImage):
     """
@@ -126,8 +124,8 @@ class RawImage(BaseImage):
     def properties(cls):
         return cls.__properties
 
-    @classmethod
-    def _header_handler(cls, header):
+    @staticmethod
+    def _header_handler(header):
         """Modifies header in a way to be specified by the user"""
         # By default, do not modify the header at all.
         return header
@@ -135,8 +133,8 @@ class RawImage(BaseImage):
     # TODO: Make sure that the header_handler ONLY handles raw images and NOT
     # reduced images (as those SHOULD already have the header handled (from
     # when the parent raw images were handled))
-    @classmethod
-    def set_header_handler(cls, handlerFunction):
+    @staticmethod
+    def set_header_handler(handlerFunction):
         """
         Sets the `_header_handler` helper method for the class
 
@@ -153,7 +151,7 @@ class RawImage(BaseImage):
             astropy.io.fits.header.Header object as its only argument, Modifies
             that header in some way, and then returns the modified header.
         """
-        RawImage._header_handler = handlerFunction
+        RawImage._header_handler = staticmethod(handlerFunction)
 
     ##################################
     ### END OF CLASS METHODS       ###
@@ -355,7 +353,7 @@ class RawImage(BaseImage):
 
             # Find the binning-specific prescan width and store it for reference
             prescanPix1 = int((prescanWidth + 28)//self.binning[0])
-            self.__prescanWidth = prescanPix1
+            self.__prescanWidth = prescanPix1 - 1
 
             # Grab the prescan data
             prescan1    = self.data[:, 0:prescanPix1]
@@ -416,7 +414,7 @@ class RawImage(BaseImage):
 
             # Find the binning-specific prescan width and store it for reference
             overscanPix1 = int((overscanWidth + 28)//self.binning[0])
-            self.__overscanWidth = overscanPix1
+            self.__overscanWidth = overscanPix1 - 1
 
             # Grab the overscan data
             overscan1    = self.data[:, -overscanPix1:]
@@ -680,8 +678,18 @@ class RawImage(BaseImage):
         outHeader['NAXIS1'] = outArr.shape[1]
         outHeader['NAXIS2'] = outArr.shape[0]
 
+        # Select the type of output image to be built on the basis of the image
+        # obsType.
+        outImageClassDict = {
+            'BIAS': MasterBias,
+            'DARK': MasterDark,
+            'FLAT': MasterFlat,
+            'OBJECT': ReducedScience
+        }
+        outImageClass = outImageClassDict[self.obsType]
+
         # Copy the input image and then update the data and uncertainty values
-        outImage = ReducedImage(
+        outImage = outImageClass(
             outArr,
             uncertainty=outUncert,
             header=outHeader
@@ -752,6 +760,8 @@ class RawFlat(RawImage):
             raise IOError('Cannot instantiate a RawFlat with a {0} type image.'.format(
                 self.obsType
             ))
+
+    # TODO: add the "mode" method to this class.
 
 class RawScience(RawImage):
     """

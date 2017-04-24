@@ -32,8 +32,32 @@ import astroimage as ai
 #
 # @with_setup(my_setup_function, my_teardown_function)
 
-# Read in an ACTUAL image of M104
-realImg1 = ai.ReducedScience.read('.\\tests\\M104_V_I.fits')
+# # Read in an ACTUAL image of M104
+# realImg1 = ai.reduced.ReducedScience.read('.\\tests\\M104_V_I.fits')
+#
+#
+# # Build a synthenic array of stars
+# ny, nx    = 1000, 1000
+# np.random.seed(123456789)
+# arr1      = 8*np.random.standard_normal((ny, nx)) + 64.0
+# ns        = 50
+# f0, sx0, sy0 = (
+#     1000*np.random.rand(ns) + 500,
+#     0.9*nx*np.random.rand(ns) + 0.05*nx,
+#     0.9*ny*np.random.rand(ns) + 0.05*ny
+# )
+#
+# # Loop through the star positions and populate them in the array
+# yy, xx = np.mgrid[:ny, :nx]
+# std0   = 2.2
+# for f1, sx, sy in zip(f0, sx0, sy0):
+#     arr1 += f1*np.exp(-0.5*
+#         (
+#         (xx-sx)**2 +
+#         (yy-sy)**2
+#         ) / (std0)**2
+#     )
+
 
 # TODO: build basic alignment tests for WCS
 

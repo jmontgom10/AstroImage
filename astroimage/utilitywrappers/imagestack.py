@@ -2,6 +2,7 @@
 import copy
 import warnings
 import psutil
+from functools import lru_cache
 
 # Scipy imports
 import numpy as np
@@ -12,13 +13,14 @@ import astropy.units as u
 from astropy.stats import sigma_clipped_stats
 from astropy.modeling import models, fitting
 from astropy.nddata import NDDataArray, StdDevUncertainty
+from photutils import make_source_mask, data_properties
 
 # AstroImage imports
-from .baseimage import BaseImage
-from .rawimages import RawBias, RawDark, RawFlat, RawScience
-from .reducedimages import MasterBias, MasterDark, MasterFlat
-from .reducedscience import ReducedScience
+from ..baseimage import BaseImage
+from ..raw import RawBias, RawDark, RawFlat, RawScience
+from ..reduced import MasterBias, MasterDark, MasterFlat, ReducedScience
 from .astrometrysolver import AstrometrySolver
+from .inpainter import Inpainter
 
 # Define which functions, classes, objects, etc... will be imported via the command
 # >>> from imagestack import *
@@ -125,11 +127,11 @@ class ImagePairOffsetGetter(object):
         deviations = (np.abs(corrImage - medCorr) > 2.0*stddev)
 
         # Count the number of masked neighbors for each pixel
-        neighborCount = np.zeros_like(corrImage, dtype=int)
+        neighborCount = np.zeros_like(corrImage, dtype=np.int16)
         for dx1 in range(-1,2,1):
             for dy1 in range(-1,2,1):
                     neighborCount += np.roll(np.roll(deviations, dy1, axis=0),
-                        dx1, axis=1).astype(int)
+                        dx1, axis=1).astype(np.int16)
 
         # Find isolated deviant pixels (these are no good!)
         deviations = np.logical_and(deviations, neighborCount <= 4)
@@ -163,9 +165,39 @@ class ImagePairOffsetGetter(object):
 
         return int(dx), int(dy)
 
+    def get_wcs_integer_pixel_offset(self):
+        """
+        Computes the offset between image1 and image2 using wcs alignment.
+
+        Provides integer pixel accuracy.
+
+        Returns
+        -------
+        dx, dy : int
+            The offset of self.image1 with respect to self.image2
+        """
+        # Grab the WCS of the first image
+        refWCS = self.image1.wcs
+
+        # Estimate the central location for this image
+        refX, refY = self.image1.shape[1]//2, self.image1.shape[0]//2
+
+        # Convert pixels to sky coordinates
+        refRA, refDec = refWCS.all_pix2world(refX, refY, 0, ra_dec_order=True)
+
+        # Compute the pixel location of the reference RA and Dec
+        dx, dy = self.image2.wcs.all_world2pix(refRA, refDec, 0)
+
+        # Convert these relativeoffsets into integer values
+        dx, dy = int(dx - refX), int(dy - refY)
+
+        # Return the image offsets
+        return (dx, dy)
+
+    @lru_cache()
     def get_cross_correlation_integer_pixel_offset(self):
         """
-        Computes the offset between array1 and array2 using cross-correlation.
+        Computes the offset between image1 and image2 using cross-correlation.
 
         Provides integer pixel accuracy.
 
@@ -217,42 +249,55 @@ class ImagePairOffsetGetter(object):
             raise ValueError('`starCutouts` must be a (numbor of stars X cutout size x cutout size) array')
 
         # Count the number of cutouts
-        nz, ny, nx = starCutouts.shape
+        numberOfStars, ny, nx = starCutouts.shape
 
         # Cull the list to the brightest square number of stars
-        if nz > 25:
+        if numberOfStars > 25:
             keepStarCount = 25
-        elif nz > 16:
+        elif numberOfStars > 16:
             keepStarCount = 16
-        elif nz > 9:
+        elif numberOfStars > 9:
             keepStarCount = 9
         else:
             raise RuntimeError('Fewer than 9 stars found: cannot build star cutout mosaic')
-
-        # Perform the actual data cut
-        brightestCutouts = starCutouts[0:keepStarCount]
 
         # Chop out the sections around each star, and build a mosaic of cutouts
         numZoneSide  = np.int(np.round(np.sqrt(keepStarCount)))
         cutoutMosaic = np.zeros((numZoneSide*ny, numZoneSide*nx))
 
-        # Loop through each star to be cut out
+        # Loop through each star to be placed in the mosaic
         iStar = 0
-        for xZone in range(numZoneSide):
-            for yZone in range(numZoneSide):
-                # Establish the pasting boundaries
-                btPaste = np.int(np.round(ny*yZone))
-                tpPaste = np.int(np.round(ny*(yZone + 1)))
-                lfPaste = np.int(np.round(nx*xZone))
-                rtPaste = np.int(np.round(nx*(xZone + 1)))
+        for starCutout in starCutouts:
+            # Measure the properties of this cutout
+            cutoutProperties = data_properties(starCutout)
 
-                # Past each of the previously selected "patches" into
-                # their respective "starImg" for cross-correlation
-                starCutout = brightestCutouts[iStar]
-                cutoutMosaic[btPaste:tpPaste, lfPaste:rtPaste] = starCutout
+            correlationCoeff = (
+                cutoutProperties.covar_sigxy /
+                (
+                    cutoutProperties.semimajor_axis_sigma *
+                    cutoutProperties.semiminor_axis_sigma
+                )
+            )
+            # Skip any stars that don't pass this roundness test.
+            if np.abs(correlationCoeff) > 0.1: continue
 
-                # Increment the star counter
-                iStar += 1
+            # Compute the zone for this star
+            yZone, xZone = np.unravel_index(iStar, (numZoneSide, numZoneSide))
+
+            # Establish the pasting boundaries
+            btPaste = np.int(np.round(ny*yZone))
+            tpPaste = np.int(np.round(ny*(yZone + 1)))
+            lfPaste = np.int(np.round(nx*xZone))
+            rtPaste = np.int(np.round(nx*(xZone + 1)))
+
+            # Paste the cutout into the star mosaic
+            cutoutMosaic[btPaste:tpPaste, lfPaste:rtPaste] = starCutout
+
+            # Increment the number of stars that have been pasted
+            iStar += 1
+
+            # If the mosaic is full, then break out of the loop
+            if iStar >= keepStarCount: break
 
         return cutoutMosaic
 
@@ -384,8 +429,13 @@ class ImagePairOffsetGetter(object):
         dx, dy : float
             The precise offset of self.image1 with respect to self.image2
         """
-        # Compute the integer pixel offsets
-        dx, dy = self.get_cross_correlation_integer_pixel_offset()
+        # Test if a quick WCS integer pixel alignment is possible.
+        if self.image1.has_wcs and self.image2.has_wcs:
+            # Compute the integer pixel offsets using WCS
+            dx, dy = self.get_wcs_integer_pixel_offset()
+        else:
+            # Compute the integer pixel offsets using cross-correlation
+            dx, dy = self.get_cross_correlation_integer_pixel_offset()
 
         # Shift image2 array to approximately match image1
         shiftedImage2 = self.image2.shift(-dx, -dy)
@@ -411,8 +461,9 @@ class ImagePairOffsetGetter(object):
         cutoutMosaic1 = self._build_star_cutout_mosaic(starCutouts1)
         cutoutMosaic2 = self._build_star_cutout_mosaic(starCutouts2)
 
+        #
         # TODO: remove this code block if possible
-
+        #
         # Construct a NEW ImagePair instance from these two mosaics
         mosaicPair = ImagePairOffsetGetter(
             ReducedScience(cutoutMosaic1),
@@ -491,10 +542,15 @@ class ImageStack(object):
             A new instance containing the data from the image .
         """
         # Check that a list (or something close o it) was provided
-        try:
-            imageList = list(imageList)
-        except:
+        if not hasattr(imageList, '__iter__'):
             raise TypeError('`imageList` must be a list or iterable object containing image instances')
+
+        # if not issubclass(type(imageList), list):
+        #     # Attempt to convert
+        #     try:
+        #         pass
+        #     except:
+        #         raise TypeError('`imageList` must be a list or iterable object containing image instances')
 
         # Start by counting the number of images
         numberOfImages = len(imageList)
@@ -556,6 +612,11 @@ class ImageStack(object):
             # Calibration images do not require alignment
             self.__aligned = True
 
+        # Initalize a boolean value to indicate that this is NOT a supersky.
+        # The boolean will be changed to "True" if-and-only-if the
+        # "produce_supersky" method is executed.
+        self.__is_supersky = False
+
         # Force all the image shapes to be the same
         self.pad_images_to_match_shapes()
 
@@ -576,6 +637,11 @@ class ImageStack(object):
     def imageType(self):
         """The type of images stored in this stack"""
         return self.__imageType
+
+    @property
+    def is_supersky(self):
+        """Boolean flag indicating if this stack has yielded a supersky"""
+        return self.__is_supersky
 
     @property
     def numberOfImages(self):
@@ -714,7 +780,7 @@ class ImageStack(object):
             raise ValueError('Silly rabbit, you need some images to align!')
 
         # Check that the image list is storing `ReducedScience` type images.
-        if issubclass(self.imageType, ReducedScience):
+        if not issubclass(self.imageType, ReducedScience):
             raise TypeError('WCS offsets can only be computed for `ReducedScience` type images')
 
         # Check that all the stored images have WCS
@@ -729,14 +795,14 @@ class ImageStack(object):
         refX, refY = self.imageList[0].shape[1]//2, self.imageList[0].shape[0]//2
 
         # Convert pixels to sky coordinates
-        refRA, refDec = refWCS.wcs_pix2world(refX, refY, 0, ra_dec_order = True)
+        refRA, refDec = refWCS.wcs_pix2world(refX, refY, 0, ra_dec_order=True)
 
         # Loop through all the remaining images in the list
         # Grab the WCS of the alignment image and convert back to pixels
         xPos = []
         yPos = []
         for img in self.imageList:
-            imgX, imgY = img.wcs.all_world2pix(refRA, refDec, 0, ra_dec_order = True)
+            imgX, imgY = img.wcs.all_world2pix(refRA, refDec, 0)
 
             # Store the relative center pointing
             xPos.append(float(imgX))
@@ -787,6 +853,7 @@ class ImageStack(object):
             the images.
         """
         # Catch the truly trivial case
+        numberOfImages = self.numberOfImages
         if self.numberOfImages <= 1:
             return (0, 0)
 
@@ -801,7 +868,11 @@ class ImageStack(object):
         # Loop through the rest of the images.
         # Use cross-correlation to get relative offsets,
         # and accumulate image shapes
-        for image in self.imageList[1:]:
+        progressString = 'Aligning image {0} of {1}'
+        for imgNum, image in enumerate(self.imageList[1:]):
+            # Update the user on the progress
+            print(progressString.format(imgNum+2, numberOfImages), end='\r')
+
             # Compute actual image offset between reference and image
             imgPair = ImagePairOffsetGetter(refImage, image)
 
@@ -815,6 +886,9 @@ class ImageStack(object):
             # Append cross_correlation values for non-reference image
             xPos.append(dx)
             yPos.append(dy)
+
+        # Print a new line for shell output
+        print('')
 
         # Compute the relative pointings from the median position
         dx = np.median(xPos) - np.array(xPos)
@@ -894,13 +968,26 @@ class ImageStack(object):
         if numberOfOffsets != self.numberOfImages:
             raise ValueError('There must be one (dx, dy) pair for each image')
 
+        # Recompute the offsets so that all images are shifted up and right
+        dx1, dy1 = dx - np.floor(dx.min()), dy - np.floor(dy.min())
+
+        # Compute the required padding
+        padX, padY = np.int(np.ceil(dx1.max())), np.int(np.ceil(dy1.max()))
+
         # Loop through each offset and apply it to the images
-        for dx1, dy1 in zip(dx, dy):
+        for dx11, dy11 in zip(dx1, dy1):
             # Extract the first image in the imageList
             thisImg = self.pop_image(0)
 
+            # Pad this image with so that shifts do not delete any data
+            thisImg = thisImg.pad(
+                ((0, padY), (0, padX)),
+                mode='constant',
+                constant_values=padding
+            )
+
             # Shift the image as necessary
-            thisImg = thisImg.shift(dx1, dy1, padding=padding)
+            thisImg = thisImg.shift(dx11, dy11, padding=padding)
 
             # Return the image to the imageList (at the END of the list)
             self.add_image(thisImg)
@@ -909,7 +996,7 @@ class ImageStack(object):
         """
         Aligns the whole stack of images using the astrometry in the header.
 
-        NOTE: (2016-06-29) This function *DOES NOT* math image PSFs.
+        NOTE: (2016-06-29) This function *DOES NOT* match image PSFs.
         Perhaps this functionality will be implemented in future versions.
 
         Parameters
@@ -942,7 +1029,10 @@ class ImageStack(object):
         self.apply_image_shift_offsets(dx, dy, padding=padding)
 
         # Set the alignment flag to True
-        ReducedScienceed = True
+        self.__aligned = True
+
+        # Set the is_supersky flag to False (in case it was previously set True)
+        self.__is_supersky = False
 
     def align_images_with_cross_correlation(self, subPixel=False,
         satLimit=16e3, padding=0):
@@ -986,7 +1076,10 @@ class ImageStack(object):
         self.apply_image_shift_offsets(dx, dy, padding=padding)
 
         # Set the alignment flag to True
-        ReducedScienceed = True
+        self.__aligned = True
+
+        # Set the is_supersky flag to False (in case it was previously set True)
+        self.__is_supersky = False
 
     ####################################
     ### START OF COMBINATION HELPERS ###
@@ -1031,9 +1124,137 @@ class ImageStack(object):
 
         return numRows, numSections
 
+    def _produce_individual_star_masks(self, dilationWidth=4):
+        """
+        Finds the stars in the image stack and builds masks to protect or omit.
+
+        Parameters
+        ----------
+        dilationWidth : int or float, optional, default: 4
+            The amount to circularly dilate outward from masked pixels. These
+            roughly translate to pixel values so that `dilationWidth=4` will
+            mask any locations within 4 pixels of a crudely identified star
+            pixel. This actually depends on the number of other factors, such as
+            the number of crudely identified star pixels in a given star, etc...
+
+        Returns
+        -------
+        starMasks : numpy.ndarray
+            A (numberOfImages, ny, nx) array where each slice along the 0th axis
+            represents the star mask for the image located at the corresponding
+            index in the imageList attribute.
+        """
+        # TODO: REWRITE THIS METHOD USING THE ASTROPY SEGMENTATION METHODS???
+        # Yes, I THINK so...
+
+        # Grab binning
+        binX, binY = self.imageList[0].binning
+
+        # Compute kernel shape
+        medianKernShape = (np.int(np.ceil(9.0/binX)), np.int(np.ceil(9.0/binY)))
+
+        # Grab the number of images (for user updates)
+        numImg = self.numberOfImages
+
+        # Construct a blank array to populate with masks
+        starMasks = np.zeros(self.shape, dtype=int)
+
+        # Loop through the images and compute individual star masks
+        for imgNum, img in enumerate(self.imageList):
+            print('Building star mask for image {0:g} of {1:g}'.format(imgNum + 1, numImg), end='\r')
+            # Grab the image array
+            thisData = img.data.copy()
+
+            # Replace bad values with zeros
+            badInds = np.where(np.logical_not(np.isfinite(thisData)))
+            thisData[badInds] = -1e6
+
+            # Filter the image
+            medImg = ndimage.median_filter(thisData, size = medianKernShape)
+
+            # get stddev of image background
+            mean, median, stddev = img.sigma_clipped_stats()
+
+            # Look for deviates from the filter (positive values only)
+            # starMask1 = np.logical_and(np.abs(thisData - medImg) > 2.0*stddev,
+            #                            thisData > 0)
+            starMask1 = (np.abs(thisData - medImg) > 2.0*stddev)
+
+            # Use the scipy ndimage opening and closing to clean the mask
+            starMask1 = ndimage.binary_opening(starMask1)
+            starMask1 = ndimage.binary_closing(starMask1)
+
+            # Clean out some edge effects.
+            starMask1[:, -4:-1] = 0
+
+            #
+            # NOTE: This doesn't work when there are nebulae and galaxies in the image!
+            #
+            # starMask1 = make_source_mask(
+            #     thisData,
+            #     snr=2,
+            #     npixels=5,
+            #     dilate_size=11,
+            #     mask_value=-1e6
+            # )
+
+            # Try using guassian kernel convolution instead
+            from astropy.convolution import convolve, convolve_fft, Gaussian2DKernel
+
+            # Initalize a dilatingKernel
+            gaussian_2D_kernel = Gaussian2DKernel(10.0)
+
+            # Normalize the kernel
+            gaussian_2D_kernel.normalize()
+
+            # If the dialation kernel is larger than 10 pixels, then use FFT
+            # convolution.
+            starMask11 = convolve_fft(
+                starMask1.astype(float),
+                gaussian_2D_kernel
+            )
+
+            # Mask any pixels with values greater than 0.04 (which seems to
+            # produce a reasonable result.)
+            peakValue     = 1/(200*np.pi)
+            maskThreshold = 10 * peakValue * np.exp(-0.5*((dilationWidth+0.5)/10.0)**2)
+
+            starMask1 = (starMask11 > maskThreshold).astype(np.int8)
+
+            # TODO: delete this code if convolution works out
+            #
+            # # Finally, liberally EXPAND the mask with four dilations
+            # starMask1 = ndimage.binary_dilation(
+            #     starMask1,
+            #     iterations=starMaskIters
+            # ).astype(np.int8)
+
+            # TODO: delete this code once I verify everything is working
+            #
+            # # Count the number of masked neighbors for each pixel
+            # neighborCount = np.zeros(thisData.shape, dtype=int)
+            # for dx in range(-1,2,1):
+            #     for dy in range(-1,2,1):
+            #         neighborCount += np.roll(np.roll(starMask1, dy, axis=0),
+            #                                  dx, axis=1).astype(np.int8)
+            #
+            # # Find pixels with more than two masked neighbor (including self)
+            # # starMask1 = np.logical_and(starMask1, neighborCount > 2)
+            # starMask1 = (neighborCount > 2).astype(np.int8)
+
+            # Place the final mask into its respective slice of the 3D array
+            starMasks[imgNum, :, :] = starMask1
+
+        # Print a newline character to preserve star mask updates
+        print('')
+
+        # Once ALL of the star masks have been computed, return them to the user
+        return starMasks
+
+
     def _construct_star_mask(self):
         """
-        Finds stars in the image stack and builds masks to protect them.
+        Finds stars in the image stack and builds masks to protect or omit.
 
         Returns
         -------
@@ -1042,57 +1263,18 @@ class ImageStack(object):
             simply returns False. This output can be used as the mask in a
             numpy.ma.core.MaskedArray object.
         """
+        # Produce a separate star mask for EACH image in the stack
+        starMasks = self._produce_individual_star_masks()
 
-        # Grab binning
-        binX, binY = self.imageList[0].binning
-
-        # Compute kernel shape
-        medianKernShape = (np.int(np.ceil(9.0/binX)), np.int(np.ceil(9.0/binY)))
-
-        # Grab the number of images and the shape of the images
-        numImg, ny, nx = self.shape
-
-        # Initalize a blank stark mask
-        starMask = np.zeros((ny, nx), dtype=int)
-
-        # Loop through the images and compute individual star masks
-        for imgNum, img in enumerate(self.imageList):
-            print('Building star mask for image {0:g} of {1:g}'.format(imgNum + 1, numImg), end='\r')
-            # Grab the image array
-            thisArr = img.data.copy()
-
-            # Replace bad values with zeros
-            badInds = np.where(np.logical_not(np.isfinite(thisArr)))
-            thisArr[badInds] = 0
-
-            # Filter the image
-            medImg = ndimage.median_filter(thisArr, size = medianKernShape)
-
-            # get stddev of image background
-            mean, median, stddev = img.sigma_clipped_stats()
-
-            # Look for deviates from the filter (positive values only)
-            starMask1 = np.logical_and(np.abs(thisArr - medImg) > 2.0*stddev,
-                                       thisArr > 0)
-
-            # Count the number of masked neighbors for each pixel
-            neighborCount = np.zeros(thisArr.shape, dtype=int)
-            for dx in range(-1,2,1):
-                for dy in range(-1,2,1):
-                    neighborCount += np.roll(np.roll(starMask1, dy, axis=0),
-                                             dx, axis=1).astype(int)
-
-            # Find pixels with more than two masked neighbor (including self)
-            starMask1 = np.logical_and(starMask1, neighborCount > 2)
-
-            # Accumulate these pixels into the final star mask
-            starMask += starMask1.astype(int)
+        # Accumulate these pixels into the final star mask
+        starMask = starMasks.sum(axis=0)
 
         # Cleanup temporary variables
-        del thisArr, badInds, medImg
+        del starMasks
 
         # Compute final star mask based on which pixels were masked more than
         # 10% of the time.
+        numImg   = self.numberOfImages
         starMask = (starMask > np.ceil(0.1*numImg)).astype(float)
 
         # Check that at least one star was detected (more than 15 pixels masked)
@@ -1396,7 +1578,7 @@ the uncertainty in stellar pixels.""")
         Parameters
         ----------
         dataSubStack : numpy.ma.ndarray
-            The 3D data array in which the bad pixels are to be found
+            The 3D data array in which to located bad pixels
 
         NaNsOrInfs : numpy.ndarray
             A 2D array indicating the locations of NaNs or Infs in dataSubStack
@@ -1412,6 +1594,9 @@ the uncertainty in stellar pixels.""")
 
         Returns
         -------
+        dataSubStack : numpy.ma.ndarray
+            The same as the input dataSubStack array, but with its mask updated.
+
         nextScale : numpy.ndarray
             A 2D array indicating which columns should continue to the next step
             of iteration.
@@ -1442,9 +1627,9 @@ the uncertainty in stellar pixels.""")
         # masked pixels and mark those for continued iteration
         nextScale = endNumMasked != startNumMasked
 
-        return nextScale, endNumMasked
+        return dataSubStack, nextScale, endNumMasked
 
-    def _construct_sub_stack_bad_pixel_mask(self, dataSubStack, starMask,
+    def _construct_sub_stack_bad_pixel_mask(self, dataSubStack, starSubMask,
         iters=5, backgroundClipStart=2.5, backgroundClipStep=0.5,
         starClipStart=35.0, starClipStep=1.0):
         """
@@ -1456,7 +1641,7 @@ the uncertainty in stellar pixels.""")
             The array of values for which to identify outliers and compute masks
             to cover those bad pixes.
 
-        starMask : array numpy.ndarray (bool type)
+        starSubMask : array numpy.ndarray (bool type)
             An array of booleans indicating which pixels in the aligned images
             are inside stellar PSFs. True values indicate pixels inside a
             stellar PSF. A scalar False valeu indicates there are no stars to
@@ -1485,8 +1670,9 @@ the uncertainty in stellar pixels.""")
         Returns
         -------
         dataSubStack : numpy.ma.ndarray
-            A bool type array where True values indicate bad pixels based on the
-            provided backgroundClipSigma and starClipSigma values.
+            The `mask` attribute of this objcet is a bool type array where True
+            values indicate bad pixels based on the provided backgroundClipSigma
+            and starClipSigma values.
         """
         # Initalize the output array and cover up any NaNs/Infs in dataSubStack
         outMask, dataSubStack = self._initalize_mask(dataSubStack)
@@ -1501,15 +1687,8 @@ the uncertainty in stellar pixels.""")
             1, # Increment EVERY pixel up to its starting value
             backgroundClipStart,
             starClipStart,
-            starMask
+            starSubMask
         )
-
-        # TODO: delete this code block if everything above is working fine
-
-        # sigmaClipScale = (
-        #     backgroundClipStart * np.logical_not(starMask).astype(int) +
-        #     starClipStart * (starMask).astype(int)
-        # )
 
         # Compute the starting number of pixels masked in each column
         startNumMasked = np.sum(dataSubStack.mask, axis=0)
@@ -1522,7 +1701,7 @@ the uncertainty in stellar pixels.""")
                 starClipStart + starClipStep*iLoop))
 
             # Perform the next iteration in the sigma-clipping
-            nextScale, startNumMasked = self._process_sigma_clip_iteration(
+            dataSubStack, nextScale, startNumMasked = self._process_sigma_clip_iteration(
                 dataSubStack,
                 NaNsOrInfs,
                 startNumMasked,
@@ -1539,16 +1718,8 @@ the uncertainty in stellar pixels.""")
                     nextScale, # Increment only columns with changed masking
                     backgroundClipStep, # Amount to increment bkg pixels
                     starClipStep,  # Amount to increment star pixels
-                    starMask # Array indictating star pixels
+                    starSubMask # Array indictating star pixels
                 )
-
-                # TODO: delete this code block if everything above is working fine
-
-                # sigmaClipScale = (
-                #     sigmaClipScale +
-                #     backgroundClipStep * nextScale * np.logical_not(starMask).astype(int) +
-                #     starClipStep * nextScale * starMask.astype(int)
-                # )
 
         # When finished processing each sub stack, return the final
         return dataSubStack
@@ -1585,7 +1756,7 @@ the uncertainty in stellar pixels.""")
         varianceOfTheTotal = (uncertainty**2).sum(axis=0)
 
         # Count the number of unmasked pixels in each column of the stack
-        numberOfUnmaskedPixels = np.sum(np.logical_not(mask).astype(int), axis=0)
+        numberOfUnmaskedPixels = np.sum(np.logical_not(mask).astype(np.int8), axis=0)
 
         # Estimate the uncertainty by dividing the variance by the number of
         # unmasked pixels in each column, and then taking the square root.
@@ -1674,10 +1845,16 @@ the uncertainty in stellar pixels.""")
             # Extract the uncertainty for this section
             uncertSubStack = self._extract_uncert_sub_stack(startRow, endRow)
 
+            # Extract the starSubMask for this section
+            if issubclass(type(starMask), np.ndarray):
+                starSubMask = starMask[startRow:endRow, :]
+            elif issubclass(type(starMask), bool):
+                starSubMask = starMask
+
             # Build the bad pixel mask for this subStack
             dataSubStack = self._construct_sub_stack_bad_pixel_mask(
                 dataSubStack,
-                starMask,
+                starSubMask,
                 iters=iters,
                 backgroundClipStart=backgroundClipStart,
                 backgroundClipStep=backgroundClipStep,
@@ -1764,6 +1941,13 @@ the uncertainty in stellar pixels.""")
         }
         outImageClass = outImageClassDict[self.imageList[0].obsType]
 
+        # TODO: decide if it is a good idea to have an optional uncertainty...
+        # # Properly handle the uncertainty provided
+        # if stackUncert is not None:
+        #     outUncert = StdDevUncertainty(stackUncert)
+        # else:
+        #     outUncert = None
+
         # Return that data to the user in a single AstroImage instance
         outImg = outImageClass(
             stackMean,
@@ -1772,8 +1956,13 @@ the uncertainty in stellar pixels.""")
             properties={'unit': self.imageList[0].unit}
         )
 
-        # If the output image is an ReducedScience, then solve its astrometry
-        if outImageClass is ReducedScience:
+        # Clean up any bad pixels in this image using the Inpointer class
+        inpainter = Inpainter(outImg)
+        outImg    = inpainter.inpaint_nans()
+
+        # If the output image is an ReducedScience and is not a supersky image,
+        # then clear out the old astrometry and solve it anew!
+        if (outImageClass is ReducedScience) and not self.is_supersky:
             # Clear out the old astrometry
             outImg.clear_astrometry()
 
@@ -1788,6 +1977,62 @@ the uncertainty in stellar pixels.""")
 
         return outImg
 
+    def _compute_supersky(self, starMasks):
+        """
+        Computes the masked median of the unaligned image stack.
+
+        Parameters
+        ----------
+        starMasks : numpy.ndarary
+            A (numberOfImages, ny, nx) array containing a True value wherever
+            there are stars and a False value in all the sky pixels.
+
+        Returns
+        -------
+        supersky : numpy.ndarray
+            A (ny, nx) array containing the median sky-counts in each pixel
+        """
+        # TODO: break this into more managably bite sized bits if necessary.
+
+        # Construct a median normalized data stack
+        dataStack = np.zeros(self.shape, dtype=np.float32)
+
+        # Loop through each image, normalize and place in data stack
+        for imgNum, img in enumerate(self.imageList):
+            # Copy the data for this image
+            thisData = img.data
+
+            # Mask this image with its starMask
+            starInds = np.where(starMasks[imgNum, :, :])
+            thisData[starInds] = np.NaN
+
+            # Compute the median of this image
+            thisMedian = np.nanmedian(thisData)
+
+            # Median normalize this image
+            thisData /= thisMedian
+
+            # Place the normalized image in its place
+            dataStack[imgNum, :, :] = thisData
+
+        # Compute the median image (ignore warnings because we'll fix those)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            medianArray = np.nanmedian(dataStack, axis=0)
+
+            # Comptue uncertainty as standard deviation/sqrt(numOfUnmaskedPixels)
+            stdArray    = np.nanstd(dataStack, axis=0)
+            numPix      = np.nansum(dataStack, axis=0)
+            uncertArray = stdArray/np.sqrt(numPix - 1)
+
+            # Renormalize by this output median
+            thisMedian = np.nanmedian(medianArray)
+            medianArray /= thisMedian
+            uncertArray /= np.abs(thisMedian)
+
+        # Return to user
+        return medianArray, uncertArray
+
     ####################################
     ### END OF COMBINATION HELPERS   ###
     ####################################
@@ -1795,6 +2040,52 @@ the uncertainty in stellar pixels.""")
     ####################################
     ### START OF COMBINATION METHODS ###
     ####################################
+
+    def produce_supersky(self, dilationWidth=4):
+        """
+        Computes the median of the unregistered image stack.
+
+        Parameters
+        ----------
+        dilationWidth : int or float, optional, default: 4
+            The amount to circularly dilate outward from masked pixels. These
+            roughly translate to pixel values so that `dilationWidth=4` will
+            mask any locations within 4 pixels of a crudely identified star
+            pixel. This actually depends on the number of other factors, such as
+            the number of crudely identified star pixels in a given star, etc...
+
+        Returns
+        -------
+        outImg : ReducedImage (or subclass)
+            The average sky image with stars masked.
+        """
+        # Catch if the images have been aligned and raise an error
+        if self.aligned:
+            raise RuntimeError('Cannot produce supersky with aligned images')
+
+        # Catch if there are enough images to produce a supersky
+        if self.numberOfImages < 2:
+            raise RuntimeError('Cannot produce supersky with less than 2 images')
+
+        # Produce individual star masks for each image in the ImageStack
+        starMasks = self._produce_individual_star_masks(
+            dilationWidth=dilationWidth
+        )
+
+        # Compute the mean and uncertainty given this star mask
+        stackMedian, stackUncert = self._compute_supersky(starMasks)
+
+        # Set the boolean supersky flag
+        self.__is_supersky = True
+
+        # Place the stack average and uncertainty into an array
+        outImg = self._finalize_output(stackMedian, stackUncert)
+
+        # Remove the units from the output image because superskys don't have units
+        outImg /= (1.0*outImg.unit)
+
+        # Return the resulting image to the user
+        return outImg
 
     def combine_images(self, iters=5, double=False, backgroundClipSigma=5.0,
         starClipSigma=40.0):
@@ -1823,6 +2114,11 @@ the uncertainty in stellar pixels.""")
             The number of standard-deviations from the median value a pixel
             located within a star can deviate from the median before it is
             marked as a bad pixel.
+
+        Returns
+        -------
+        outImg : ReducedImage (or subclass)
+            The average image and uncertainty based on the input image list
         """
         # Catch the truly trivial case
         if self.numberOfImages <= 1:
