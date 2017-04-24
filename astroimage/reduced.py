@@ -218,6 +218,14 @@ class ReducedImage(BaseImage):
             wcs=self._BaseImage__fullData.wcs
         )
 
+    @property
+    def snr(self):
+        """The signa-to-noise ratio of the data and uncertainty in this image"""
+        if self.has_uncertainty:
+            return self.data/self.uncertainty
+        else:
+            return None
+
     ##################################
     ### END OF PROPERTIES        ###
     ##################################
