@@ -7,11 +7,15 @@ from nose import with_setup
 
 # Astropy imports
 from astropy.io import fits
+from astropy.wcs import WCS
 from astropy.coordinates import match_coordinates_sky, SkyCoord
 import astropy.units as u
 
 # AstroImage imports
 import astroimage as ai
+
+# Read in a real image for testing purposes
+realImg1 = ai.reduced.ReducedScience.read('.\\tests\\M104_V_I.fits')
 
 ###
 # I have not yet learned how to use setup and tearndown functions usefully
@@ -58,6 +62,51 @@ import astroimage as ai
 #         ) / (std0)**2
 #     )
 
+def test_error_propagation():
+    ### Test if a simple set of arrays has its uncertainty correctly propagated.
+
+    img1 = realImg1[400:410,400:410]
+    gain = 3.3
+    img1.data        = 100*np.ones((10, 10))
+    img1.uncertainty = np.sqrt((img1.data)/gain)
+
+    # Construct the list of images
+    imgList = []
+    for i in range(4):
+        img2 = img1.copy()
+        img2.data = img1.data + i*0.5
+        img2.uncertainty = np.sqrt((img1.data + i)/gain)
+        imgList.append(img2)
+
+    # correct for airmass
+    imgList = [img.correct_airmass(0.4) for img in imgList]
+
+    # Construct the ImageStack object
+    imgStack = ai.utilitywrappers.ImageStack(imgList)
+
+    # Execute the combine_images method
+    imgStack.align_images_with_wcs()
+
+    # Compute the combined image
+    comboImg = imgStack.combine_images()
+
+    # Now compute the numpy version
+    arrStack = np.array([img.data for img in imgStack.imageList])
+
+    # Compute the average array
+    avgArr = np.mean(arrStack, axis=0)
+
+    # Assert equality of numpy and ImageStack method
+    assert np.all(avgArr == comboImg.data)
+
+    # Compute the expected uncertainty
+    uncStack = np.array([img.uncertainty for img in imgStack.imageList])
+
+    # Prop uncertainty
+    propagatedUnc = np.sqrt(np.mean(uncStack**2, axis=0))
+
+    # Assert equality of numpy and ImageStack method
+    assert np.all(propagatedUnc == comboImg.uncertainty)
 
 # TODO: build basic alignment tests for WCS
 

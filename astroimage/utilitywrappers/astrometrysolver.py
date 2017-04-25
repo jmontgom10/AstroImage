@@ -7,7 +7,6 @@ import subprocess
 # Astropy imports
 from astropy.nddata import NDDataArray, StdDevUncertainty
 from astropy.io import fits
-from astropy.wcs import WCS
 
 # AstroImage imports
 from ..reduced import ReducedScience
@@ -124,6 +123,13 @@ class AstrometrySolver(object):
                 # then define the "bash --login -c (cd ...)" command
                 # using Cygwin's "cygpath" to convert to POSIX format
                 # Try to get the proper path using the cygpath executable
+
+                # TODO: look into using
+                #
+                # >>> import argparse
+                #
+                # to properly parse arguments for the current system.
+
                 proc = subprocess.Popen(['cygpath', os.getcwd()],
                                         stdout=subprocess.PIPE,
                                         universal_newlines=True)
@@ -254,11 +260,24 @@ class AstrometrySolver(object):
         return command
 
     @staticmethod
-    def _run_executable_solver(command, shellCommand):
+    def _run_executable_solver(command, shellCommand, silent=False):
         """Initiates a subprocess to run the `solve-field` executable"""
+        # Decide whether or not to display the output to the screen
+        # TODO: add appropriate parsing for output handler (this should be used
+        # to suppress output from the `solve-field` executable if the user
+        # dosen't want to see hundreds of lines of garbage.)
+        if silent:
+            outputHandler = subprocess.PIPE
+        else:
+            outputHandler = None
+
         try:
             # Attempt to run the solver
-            astroProc = subprocess.Popen(command, shell=shellCommand)
+            astroProc = subprocess.Popen(
+                command,
+                stdout=outputHandler,
+                shell=shellCommand
+            )
             astroProc.wait()
             astroProc.terminate()
         except:
@@ -328,15 +347,19 @@ class AstrometrySolver(object):
         if temporaryFile:
             if os.path.isfile(fileToSolve): os.remove(fileToSolve)
 
-    def run(self, clobber=False):
+    def run(self, clobber=False, silent=False):
         """
         Invokes the astrometry.net engine and solves the image astrometry.
 
         Parameters
         ----------
         clobber : bool, optional, default: False
-            If true, then whatever WCS may be stored in the header will be
+            If True, then whatever WCS may be stored in the header will be
             deleted and overwritten with a new solution.
+
+        silent : bool, optional, default: False
+            If True, then the output of the `solve-field` executable will be
+            suppressed. (not yet working!)
 
         Returns
         -------
@@ -380,11 +403,10 @@ class AstrometrySolver(object):
         )
 
         # Use the subprocess module to run the `solve-field` executable
-        self._run_executable_solver(command, shellCommand)
+        self._run_executable_solver(command, shellCommand, silent=silent)
 
         # Check if the expected output files are there and extract astrometry
         wcs, success, tmpFilePaths = self._read_astrometric_solution_from_disk()
-
         if success:
             # If there was a WCS to be read, then...
             # Make a copy of the image to be returned

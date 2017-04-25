@@ -234,13 +234,13 @@ class ReducedImage(BaseImage):
     ### START OF OTHER METHODS     ###
     ##################################
 
-    def _build_HDUs(self, dtype):
+    def _build_HDUs(self):
         # Invoke the parent method to build the basic HDU
         HDUs = super(ReducedImage, self)._build_HDUs()
 
         if self.uncertainty is not None:
              # Bulid a secondary HDU
-            sigmaHDU = fits.ImageHDU(data = self.uncertainty.astype(dtype),
+            sigmaHDU = fits.ImageHDU(data = self.uncertainty.astype(self.dtype),
                                      name = 'UNCERTAINTY',
                                      do_not_scale_image_data=True)
             HDUs.append(sigmaHDU)
@@ -260,36 +260,36 @@ class ReducedImage(BaseImage):
 
         return outImg
 
-def show_uncertainty(self, axes=None, cmap='viridis', vmin=None, vmax=None,
-        origin='lower', interpolation='nearest', noShow=False,
-        stretch='linear', **kwargs):
-    """Displays the array stored in the `uncertainty` property."""
-    # Check if there is an uncertainty to display
-    if self.has_uncertainty:
-        raise ValueError('No `uncertainty` array in this instance to display.')
+    def show_uncertainty(self, axes=None, cmap='viridis', vmin=None, vmax=None,
+            origin='lower', interpolation='nearest', noShow=False,
+            stretch='linear', **kwargs):
+        """Displays the array stored in the `uncertainty` property."""
+        # Check if there is an uncertainty to display
+        if not self.has_uncertainty:
+            raise ValueError('No `uncertainty` array in this instance to display.')
 
-    # Build the appropriate axes for this object
-    axes = self._build_axes(self, axes=axes)
+        # Build the appropriate axes for this object
+        axes = self._build_axes(axes=axes)
 
-    # TODO: Figure out whether or not to store this AxesImage instance
-    # Display the signal-to-noise ratio
-    image = self._show_array(self.uncertainty, axes=axes, cmap=cmap,
-        vmin=vmin, vmax=vmax, origin=origin, interpolation=interpolation,
-        noShow=noShow, stretch=stretch, **kwargs)
+        # TODO: Figure out whether or not to store this AxesImage instance
+        # Display the signal-to-noise ratio
+        image = self._show_array(self.uncertainty, axes=axes, cmap=cmap,
+            vmin=vmin, vmax=vmax, origin=origin, interpolation=interpolation,
+            noShow=noShow, stretch=stretch, **kwargs)
 
     def show_snr(self, axes=None, cmap='viridis', vmin=None, vmax=None,
             origin='lower', interpolation='nearest', noShow=False,
             stretch='linear', **kwargs):
         """Displays the signal-to-noise ratio for this image."""
         # Check if there is an uncertainty to compute SNR
-        if self.has_uncertainty:
+        if not self.has_uncertainty:
             raise ValueError('No `uncertainty` array in this instance to compute SNR.')
 
         # Compute the signal-to-noise
         snr = self.data/self.uncertainty
 
         # Build the appropriate axes for this object
-        axes = self._build_axes(self, axes=axes)
+        axes = self._build_axes(axes=axes)
 
         # TODO: Figure out whether or not to store this AxesImage instance
         # Display the signal-to-noise ratio
