@@ -34,11 +34,11 @@ from astropy.nddata import NDDataArray, StdDevUncertainty
 from astropy.wcs import WCS
 from astropy import units as u
 from astropy.coordinates import SkyCoord
+from astropy.stats import sigma_clipped_stats
 from astropy.visualization import (ImageNormalize,  # Import the ImageNormalize
     ManualInterval, MinMaxInterval,                 # Import intervals
     ZScaleInterval, AsymmetricPercentileInterval,
     LinearStretch, LogStretch, AsinhStretch)        # Import stretchers
-from astropy.stats import sigma_clipped_stats
 
 # Matplotlib imports
 import matplotlib as mpl
@@ -227,9 +227,8 @@ class BaseImage(object):
     @classmethod
     def baseClass(cls):
         """Quick reference to the BaseImage class"""
-        thisClass_methodResolutionOrder = cls.mro()
-        baseClass = thisClass_methodResolutionOrder[-2]
-        return baseClass
+        for thisClass in cls.mro():
+            if thisClass.__name__ == 'BaseImage': return thisClass
 
     @ClassProperty
     @classmethod
@@ -252,7 +251,7 @@ class BaseImage(object):
 
         Returns
         -------
-        out : None
+        out : Noneo
 
         Examples
         --------
@@ -2075,183 +2074,8 @@ class BaseImage(object):
 
         return sigma_clipped_stats(tmpArr, **kwargs)
 
-    def _get_ticks(self):
-        """
-        Builds a list of tick properties for plotting utilities using WCS.
-
-        Parameters
-        ----------
-        None
-
-        Returns
-        -------
-        RAspacing, DecSpacing : tuple
-            The spacing interval for the RA and Dec axes
-
-        RAformatting, DecFormatting : tuple
-            The formatting to get nice tick labels for each axis
-
-        RAminorTickFreqs, DecminorTicksFreq : tuple
-            The frequency of minor ticks appropriate given the major tick
-            spacing for each axis
-        """
-        # Check if WCS is present
-        if not self.has_wcs:
-            return (None, None, None)
-
-        # First compute the image dimensions in arcsec
-        ny, nx        = np.array(self.shape)
-        ps_x, ps_y    = self.pixel_scales
-        height, width = (ny*u.pix)*ps_y, (nx*u.pix)*ps_x
-
-        # Setup a range of viable major tick spacing options
-        spacingOptions = u.arcsec * np.array([
-            0.1,          0.25,        0.5,
-            1,            2,           5,             10,
-            15,           20,          30,            1*60,
-            2*60,         5*60,        10*60,         30*60,
-            1*60*60,      2*60*60,     5*60*60
-        ])
-
-        # Setup corresponding RA and Dec tick label format strings
-        RAformatters = np.array([
-            'hh:mm:ss.s', 'hh:mm:ss.s', 'hh:mm:ss.s',
-            'hh:mm:ss',   'hh:mm:ss',   'hh:mm:ss',   'hh:mm:ss',
-            'hh:mm:ss',   'hh:mm:ss',   'hh:mm:ss',   'hh:mm',
-            'hh:mm',      'hh:mm',      'hh:mm',      'hh:mm',
-            'hh',         'hh',         'hh'
-        ])
-        DecFormatters = np.array([
-            'dd:mm:ss.s', 'dd:mm:ss.s', 'dd:mm:ss.s',
-            'dd:mm:ss',   'dd:mm:ss',   'dd:mm:ss',   'dd:mm:ss',
-            'dd:mm:ss',   'dd:mm:ss',   'dd:mm:ss',   'dd:mm',
-            'dd:mm',      'dd:mm',      'dd:mm',      'dd:mm',
-            'dd',         'dd',         'dd'
-        ])
-
-        # Define a set of minor tick frequencies associated with each
-        # major tick spacing
-        minorTicksFreqs = np.array([
-            10,           4,            5,
-            10,           4,            5,            10,
-            3,            10,           6,            10,
-            4,            5,            10,           6,
-            10,           4,            5
-        ])
-
-        # Figure out which major tick spacing provides the FEWEST ticks
-        # but greater than 3
-        y_cen, x_cen    = 0.5*ny, 0.5*nx
-        RA_cen, Dec_cen = self.wcs.all_pix2world([x_cen], [y_cen], 0, ra_dec_order=True)
-
-        # Compute which spacing, format, minorTicksFreq to select for RA axis
-        hours2degrees = 15.0
-        RAcompressionFactor = np.cos(np.deg2rad(Dec_cen))
-        compressedRAspacingOptions = hours2degrees*spacingOptions*RAcompressionFactor
-        numberOfRAchunks = (width/compressedRAspacingOptions).decompose().value
-        atLeast2RAchunks = np.floor(numberOfRAchunks) >= 2
-        RAspacingInd  = np.max(np.where(atLeast2RAchunks))
-
-        # Compute which spacing, format, minorTicksFreq to select for Dec axis
-        numberOfDecChunks = (height/spacingOptions).decompose().value
-        atLeast3DecChunks = np.floor(numberOfDecChunks) >= 3
-        DecSpacingInd = np.max(np.where(atLeast3DecChunks))
-
-        # Select the actual RA and Dec spacing
-        RAspacing  = hours2degrees*spacingOptions[RAspacingInd]
-        DecSpacing = spacingOptions[DecSpacingInd]
-
-        # Select the specific formatting for this tick interval
-        RAformatter  = RAformatters[RAspacingInd]
-        DecFormatter = DecFormatters[DecSpacingInd]
-
-        # And now select the minor tick frequency
-        RAminorTicksFreq  = minorTicksFreqs[RAspacingInd]
-        DecMinorTicksFreq = minorTicksFreqs[DecSpacingInd]
-
-        return (
-            (RAspacing, DecSpacing),
-            (RAformatter, DecFormatter),
-            (RAminorTicksFreq, DecMinorTicksFreq)
-        )
-
-    def _build_axes(self, axes=None):
-        """
-        Constructs the appropriate set of axes for this image.
-
-        If a preconstructed axes instance is supplied, then that instance is
-        simply returned otherwise a new axis instance is constructed. If the
-        object includes a viable WCS, then a WCSaxes instance is constructed,
-        otherwise a regular matplotlib.axes.Axes instance is constructed.
-
-        Paramaters
-        ----------
-        axes : None or axesInstance
-            The axes in which te place the image output.
-
-        Returns
-        -------
-        fig  : matplotlib.figure.Figure
-            The Figure instance in which axes will be stored.
-
-        axes : WCSaxes or matplotlib.axes.Axes
-            The Axes instance in which the data will be displayed.
-        """
-        # Handle the trivial case
-        if axes is not None:
-            # Extract the figure from the axes instance and return
-            fig  = axes.figure
-
-            return (fig, axes)
-
-        if self._BaseImage__fullData.wcs is None:
-            # Handle the matplotlib case
-            # Initalize a Figure and Axes instance
-            fig = plt.figure(figsize = (8,8))
-            axes = fig.add_subplot(1,1,1)
-
-            return (fig, axes)
-
-        # If there is a valid WCS in this image, then build the
-        # axes using the WCS for the projection
-        fig = plt.figure(figsize = (8,8))
-        axes = fig.add_subplot(1, 1, 1, projection=self.wcs)
-
-        # Set the axes linewidth
-        axes.coords.frame.set_linewidth(2)
-
-        # Label the axes establish minor ticks.
-        RA_ax  = axes.coords[0]
-        Dec_ax = axes.coords[1]
-        RA_ax.set_axislabel('RA [J2000]',
-                            fontsize=12, fontweight='bold')
-        Dec_ax.set_axislabel('Dec [J2000]',
-                             fontsize=12, fontweight='bold', minpad=-0.4)
-
-        # Retrieve the apropriate spacing and formats
-        spacing, formatter, minorTicksFreq = self._get_ticks()
-
-        # Set the tick width and length
-        RA_ax.set_ticks(spacing=spacing[0], size=12, width=2)
-        Dec_ax.set_ticks(spacing=spacing[1], size=12, width=2)
-
-        # Set tick label formatters
-        RA_ax.set_major_formatter(formatter[0])
-        Dec_ax.set_major_formatter(formatter[1])
-
-        # Set the other tick label format
-        RA_ax.set_ticklabel(fontsize=12, fontweight='demibold')
-        Dec_ax.set_ticklabel(fontsize=12, fontweight='demibold')
-
-        # Turn on minor ticks and set number of minor ticks
-        RA_ax.display_minor_ticks(True)
-        Dec_ax.display_minor_ticks(True)
-        RA_ax.set_minor_frequency(minorTicksFreq[0])
-        Dec_ax.set_minor_frequency(minorTicksFreq[1])
-
-        return (fig, axes)
-
-    def _normalize_and_stretch_image(self, stretch=None, vmin=None, vmax=None):
+    @staticmethod
+    def _normalize_and_stretch_array(array, stretch=None, vmin=None, vmax=None):
             """
             Builds a normalized and stretched version of the image for display.
 
@@ -2278,7 +2102,7 @@ class BaseImage(object):
             """
             if stretch.lower() == 'linear':
                 return ImageNormalize(
-                    self.data,
+                    array,
                     interval=ZScaleInterval(),
                     vmin=vmin,
                     vmax=vmax,
@@ -2287,7 +2111,7 @@ class BaseImage(object):
 
             if stretch.lower() == 'log':
                 return ImageNormalize(
-                    self.data,
+                    array,
                     interval=AsymmetricPercentileInterval(30, 99),
                     vmin=vmin,
                     vmax=vmax,
@@ -2296,17 +2120,119 @@ class BaseImage(object):
 
             if stretch.lower() == 'asinh':
                 return ImageNormalize(
-                    self.data,
+                    array,
                     interval=ZScaleInterval(),
                     vmin=vmin,
                     vmax=vmax,
                     stretch=AsinhStretch()
                 )
 
+    def _build_axes(self, axes=None):
+        """
+        Constructs the appropriate set of axes for this image.
+
+        If a preconstructed axes instance is supplied, then that instance is
+        simply returned otherwise a new axis instance is constructed. If the
+        object includes a viable WCS, then a WCSaxes instance is constructed,
+        otherwise a regular matplotlib.axes.Axes instance is constructed.
+
+        Paramaters
+        ----------
+        axes : None or axesInstance
+            The axes in which te place the image output.
+
+        Returns
+        -------
+        axes : WCSaxes or matplotlib.axes.Axes
+            The Axes instance in which the data will be displayed.
+        """
+        # Handle the trivial case
+        if axes is not None:
+            try:
+                # Extract the figure from the axes instance and return
+                fig  = axes.figure
+
+                return (fig, axes)
+            except:
+                raise TypeError('`axes` must be a `matplotlib.axes.Axes` or `astropy.visualization.wcsaxes.core.WCSAxes` instance.')
+
+        # If no axes were provided, then simply build a vanilla matplotlib axes.
+        fig = plt.figure(figsize = (8,8))
+        axes = fig.add_subplot(1,1,1)
+
+        return axes
+
+    def _show_array(self, array, axes=None, cmap='viridis', vmin=None, vmax=None,
+            origin='lower', interpolation='nearest', noShow=False,
+            stretch='linear', **kwargs):
+        """
+        Displays the passed array to the user.
+
+        See `show` for more information.
+
+        Parameters
+        ----------
+        Takes all the same parameters as the `show` method.
+
+        Returns
+        -------
+        image : `~matplotlib.image.AxesImage`
+            The AxesImage instance of the displayed image
+        """
+        # Check the vmin value
+        if not issubclass(type(vmin), (type(None),
+            int, np.int, np.int8, np.int16, np.int32, np.int64,
+            float, np.float, np.float16, np.float32, np.float64)):
+            raise TypeError('`vmin` must be an int or float')
+
+        # Check the vmax value
+        if not issubclass(type(vmax), (type(None),
+            int, np.int, np.int8, np.int16, np.int32, np.int64,
+            float, np.float, np.float16, np.float32, np.float64)):
+            raise TypeError('`vmax` must be an int or float')
+
+        # Check if the provided `stretch` keyword argument is a good one.
+        if type(stretch) is not str:
+            raise TypeError('`stretch` must be a string')
+
+        # TODO: Add asinh stretching
+        if stretch not in ['linear', 'log']:
+            raise ValueError('The provided `stretch` keyword is not recognized')
+
+        # Compute a good normalization for this image
+        norm = self._normalize_and_stretch_array(
+            array,
+            stretch=stretch,
+            vmin=vmin,
+            vmax=vmax
+        )
+
+        # Set the axes line properties to be thicker
+        for axis in ['top','bottom','left','right']:
+            axes.spines[axis].set_linewidth(4)
+
+        # Generate the AxesImage instance to display the image to the user
+        image = axes.imshow(array, origin=origin, norm=norm, cmap=cmap,
+            interpolation=interpolation, **kwargs)
+
+        # Determine if the current state is "interactive"
+        isInteractive = mpl.is_interactive()
+
+        # Display the image to the user, if requested
+        if not noShow:
+            plt.ion()
+            axes.figure.show()
+
+            # Reset the original "interactive" state
+            if not isInteractive:
+                plt.ioff()
+
+        # Return the AxesImage instnace
+        return image
+
     def show(self, axes=None, cmap='viridis', vmin=None, vmax=None,
             origin='lower', interpolation='nearest', noShow=False,
             stretch='linear', **kwargs):
-        #TODO: add the 'interpolation' description to docstring (if I like it..)
         """
         Displays an interactive image to the user.
 
@@ -2323,6 +2249,16 @@ class BaseImage(object):
             `vmin` and `vmax` are used in conjunction with norm to normalize
             luminance data.  Note if you pass a `norm` instance, your settings
             for `vmin` and `vmax` will be ignored.
+
+        interpolation : str, optional, default: `nearest`
+            Sets the interpolation method to be applied to the array before
+            displaying on screen. The default is to use nearest-neighbor in
+            order to emphasize pixels.
+
+            Acceptable values are `none`, `nearest`, `bilinear`, `bicubic`,
+            `spline16`, `spline36`, `hanning`, `hamming`, `hermite`, `kaiser`,
+            `quadric`, `catrom`, `gaussian`, `bessel`, `mitchell`, `sinc`,
+            `lanczo`
 
         origin : str, optional, default: `lower`
             Sets the location of the coordinates origin.
@@ -2356,60 +2292,17 @@ class BaseImage(object):
         image : `~matplotlib.image.AxesImage`
             The AxesImage instance of the displayed image
         """
-        # Check the vmin value
-        if not issubclass(type(vmin), (type(None),
-            int, np.int, np.int8, np.int16, np.int32, np.int64,
-            float, np.float, np.float16, np.float32, np.float64)):
-            raise TypeError('`vmin` must be an int or float')
-
-        # Check the vmax value
-        if not issubclass(type(vmax), (type(None),
-            int, np.int, np.int8, np.int16, np.int32, np.int64,
-            float, np.float, np.float16, np.float32, np.float64)):
-            raise TypeError('`vmax` must be an int or float')
-
-        # Check if the provided `stretch` keyword argument is a good one.
-        if type(stretch) is not str:
-            raise TypeError('`stretch` must be a string')
-
-        # TODO: Add asinh stretching
-        if stretch not in ['linear', 'log']:
-            raise ValueError('The provided `stretch` keyword is not recognized')
-
-        # First, determine if the current state is "interactive"
-        isInteractive = mpl.is_interactive()
-
-        # Compute a good normalization for this image
-        norm = self._normalize_and_stretch_image(
-            stretch=stretch,
-            vmin=vmin,
-            vmax=vmax
-        )
-
         # Construct the figure and axes to be displayed
-        fig, axes = self._build_axes(axes)
+        axes = self._build_axes(axes)
 
-        # Set the axes line properties to be thicker
-        for axis in ['top','bottom','left','right']:
-            axes.spines[axis].set_linewidth(4)
+        # Generate the matplotlib `AxesImage` instance to display.
+        image = self._show_array(self.data, axes=axes, cmap=cmap, vmin=vmin,
+            vmax=vmax, origin=origin, interpolation=interpolation,
+            noShow=noShow, stretch=stretch, **kwargs)
 
-        # Finally display the image to the user!
-        image = axes.imshow(self.data, origin=origin, norm=norm, cmap=cmap,
-            interpolation=interpolation, **kwargs)
+        # Store the AxesImage instance and return to the user
+        self._BaseImage__image = image
 
-        # Display the image to the user, if requested
-        if not noShow:
-            plt.ion()
-            fig.show()
-
-            # Reset the original "interactive" state
-            if not isInteractive:
-                plt.ioff()
-
-        # Store the axIm instance and return to the user
-        self.__image = image
-
-        # Return the graphics objects to the user
         return image
 
     ######
@@ -2419,9 +2312,7 @@ class BaseImage(object):
     # TODO
     # Test if figure exists
 
-    # if self.fig is None or not plt.fignum_exists(self.fig.number):
-
-
+    # if self.fig is None or not plt.fignum_exists(self.figure.number):
 
     # If the figure number doesn't exist, then assume the figure was destroyed,
     # and must be recreated...

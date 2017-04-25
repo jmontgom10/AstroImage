@@ -220,7 +220,7 @@ class ReducedImage(BaseImage):
 
     @property
     def snr(self):
-        """The signa-to-noise ratio of the data and uncertainty in this image"""
+        """The signal-to-noise ratio of the data and uncertainty in this image"""
         if self.has_uncertainty:
             return self.data/self.uncertainty
         else:
@@ -259,6 +259,45 @@ class ReducedImage(BaseImage):
         outImg._properties_to_header()
 
         return outImg
+
+def show_uncertainty(self, axes=None, cmap='viridis', vmin=None, vmax=None,
+        origin='lower', interpolation='nearest', noShow=False,
+        stretch='linear', **kwargs):
+    """Displays the array stored in the `uncertainty` property."""
+    # Check if there is an uncertainty to display
+    if self.has_uncertainty:
+        raise ValueError('No `uncertainty` array in this instance to display.')
+
+    # Build the appropriate axes for this object
+    axes = self._build_axes(self, axes=axes)
+
+    # TODO: Figure out whether or not to store this AxesImage instance
+    # Display the signal-to-noise ratio
+    image = self._show_array(self.uncertainty, axes=axes, cmap=cmap,
+        vmin=vmin, vmax=vmax, origin=origin, interpolation=interpolation,
+        noShow=noShow, stretch=stretch, **kwargs)
+
+    def show_snr(self, axes=None, cmap='viridis', vmin=None, vmax=None,
+            origin='lower', interpolation='nearest', noShow=False,
+            stretch='linear', **kwargs):
+        """Displays the signal-to-noise ratio for this image."""
+        # Check if there is an uncertainty to compute SNR
+        if self.has_uncertainty:
+            raise ValueError('No `uncertainty` array in this instance to compute SNR.')
+
+        # Compute the signal-to-noise
+        snr = self.data/self.uncertainty
+
+        # Build the appropriate axes for this object
+        axes = self._build_axes(self, axes=axes)
+
+        # TODO: Figure out whether or not to store this AxesImage instance
+        # Display the signal-to-noise ratio
+        image = self._show_array(snr,  axes=axes, cmap=cmap, vmin=vmin,
+            vmax=vmax, origin=origin, interpolation=interpolation,
+            noShow=noShow, stretch=stretch, **kwargs)
+
+        return image
 
     ##################################
     ### END OF OTHER METHODS       ###
@@ -1597,6 +1636,196 @@ class ReducedScience(ResizingMixin, NumericsMixin, ReducedImage):
         self._BaseImage__header.update(wcsHeader)
 
         return None
+
+    def _get_ticks(self):
+        """
+        Builds a list of tick properties for plotting utilities using WCS.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        RAspacing, DecSpacing : tuple
+            The spacing interval for the RA and Dec axes
+
+        RAformatting, DecFormatting : tuple
+            The formatting to get nice tick labels for each axis
+
+        RAminorTickFreqs, DecminorTicksFreq : tuple
+            The frequency of minor ticks appropriate given the major tick
+            spacing for each axis
+        """
+        # Check if WCS is present
+        if not self.has_wcs:
+            return (None, None, None)
+
+        # First compute the image dimensions in arcsec
+        ny, nx        = np.array(self.shape)
+        ps_x, ps_y    = self.pixel_scales
+        height, width = (ny*u.pix)*ps_y, (nx*u.pix)*ps_x
+
+        # Setup a range of viable major tick spacing options
+        spacingOptions = u.arcsec * np.array([
+            0.1,          0.25,        0.5,
+            1,            2,           5,             10,
+            15,           20,          30,            1*60,
+            2*60,         5*60,        10*60,         30*60,
+            1*60*60,      2*60*60,     5*60*60
+        ])
+
+        # Setup corresponding RA and Dec tick label format strings
+        RAformatters = np.array([
+            'hh:mm:ss.s', 'hh:mm:ss.s', 'hh:mm:ss.s',
+            'hh:mm:ss',   'hh:mm:ss',   'hh:mm:ss',   'hh:mm:ss',
+            'hh:mm:ss',   'hh:mm:ss',   'hh:mm:ss',   'hh:mm',
+            'hh:mm',      'hh:mm',      'hh:mm',      'hh:mm',
+            'hh',         'hh',         'hh'
+        ])
+        DecFormatters = np.array([
+            'dd:mm:ss.s', 'dd:mm:ss.s', 'dd:mm:ss.s',
+            'dd:mm:ss',   'dd:mm:ss',   'dd:mm:ss',   'dd:mm:ss',
+            'dd:mm:ss',   'dd:mm:ss',   'dd:mm:ss',   'dd:mm',
+            'dd:mm',      'dd:mm',      'dd:mm',      'dd:mm',
+            'dd',         'dd',         'dd'
+        ])
+
+        # Define a set of minor tick frequencies associated with each
+        # major tick spacing
+        minorTicksFreqs = np.array([
+            10,           4,            5,
+            10,           4,            5,            10,
+            3,            10,           6,            10,
+            4,            5,            10,           6,
+            10,           4,            5
+        ])
+
+        # Figure out which major tick spacing provides the FEWEST ticks
+        # but greater than 3
+        y_cen, x_cen    = 0.5*ny, 0.5*nx
+        RA_cen, Dec_cen = self.wcs.all_pix2world(
+            [x_cen],
+            [y_cen],
+            0,
+            ra_dec_order=True
+        )
+
+        # Compute which spacing, format, minorTicksFreq to select for RA axis
+        hours2degrees = 15.0
+        RAcompressionFactor = np.cos(np.deg2rad(Dec_cen))
+        compressedRAspacingOptions = hours2degrees*spacingOptions*RAcompressionFactor
+        numberOfRAchunks = (width/compressedRAspacingOptions).decompose().value
+        atLeast2RAchunks = np.floor(numberOfRAchunks) >= 2
+        RAspacingInd  = np.max(np.where(atLeast2RAchunks))
+
+        # Compute which spacing, format, minorTicksFreq to select for Dec axis
+        numberOfDecChunks = (height/spacingOptions).decompose().value
+        atLeast3DecChunks = np.floor(numberOfDecChunks) >= 3
+        DecSpacingInd = np.max(np.where(atLeast3DecChunks))
+
+        # Select the actual RA and Dec spacing
+        RAspacing  = hours2degrees*spacingOptions[RAspacingInd]
+        DecSpacing = spacingOptions[DecSpacingInd]
+
+        # Select the specific formatting for this tick interval
+        RAformatter  = RAformatters[RAspacingInd]
+        DecFormatter = DecFormatters[DecSpacingInd]
+
+        # And now select the minor tick frequency
+        RAminorTicksFreq  = minorTicksFreqs[RAspacingInd]
+        DecMinorTicksFreq = minorTicksFreqs[DecSpacingInd]
+
+        return (
+            (RAspacing, DecSpacing),
+            (RAformatter, DecFormatter),
+            (RAminorTicksFreq, DecMinorTicksFreq)
+        )
+
+    def _build_axes(self, axes=None):
+        """
+        Constructs the appropriate set of axes for this image.
+
+        If a preconstructed axes instance is supplied, then that instance is
+        simply returned otherwise a new axis instance is constructed. If the
+        object includes a viable WCS, then a WCSaxes instance is constructed,
+        otherwise a regular matplotlib.axes.Axes instance is constructed.
+
+        Paramaters
+        ----------
+        axes : None or axesInstance
+            The axes in which te place the image output.
+
+        Returns
+        -------
+        axes : WCSaxes or matplotlib.axes.Axes
+            The Axes instance in which the data will be displayed.
+        """
+        # TODO: test if this section of code can be executed via "super"
+        # If a set of axes was provided, then simply extract the current figure,
+        # and return that information to the user
+        if axes is not None:
+            try:
+                # Get the parent figure instance
+                fig = axes.figure
+
+                return axes
+            except:
+                raise TypeError('`axes` must be a `matplotlib.axes.Axes` or `astropy.visualization.wcsaxes.core.WCSAxes` instance.')
+
+        # If there is no WCS, then simply return a regular old set of axes.
+        if self._BaseImage__fullData.wcs is None:
+            # Build a regular matplotlib Axes instanc.
+            fig = plt.figure(figsize = (8,8))
+            axes = fig.add_subplot(1,1,1)
+
+            return axes
+
+        # If there is a valid WCS in this image, then build the axes using the
+        # WCS for the projection
+        fig = plt.figure(figsize = (8,8))
+        axes = fig.add_subplot(1, 1, 1, projection=self.wcs)
+
+        # Set the axes linewidth
+        axes.coords.frame.set_linewidth(2)
+
+        # Label the axes establish minor ticks.
+        RA_ax  = axes.coords[0]
+        Dec_ax = axes.coords[1]
+        RA_ax.set_axislabel(
+            'RA [J2000]',
+            fontsize=12,
+            fontweight='bold'
+        )
+        Dec_ax.set_axislabel(
+            'Dec [J2000]',
+            fontsize=12,
+            fontweight='bold',
+            minpad=-0.4
+        )
+
+        # Retrieve the apropriate spacing and formats
+        spacing, formatter, minorTicksFreq = self._get_ticks()
+
+        # Set the tick width and length
+        RA_ax.set_ticks(spacing=spacing[0], size=12, width=2)
+        Dec_ax.set_ticks(spacing=spacing[1], size=12, width=2)
+
+        # Set tick label formatters
+        RA_ax.set_major_formatter(formatter[0])
+        Dec_ax.set_major_formatter(formatter[1])
+
+        # Set the other tick label format
+        RA_ax.set_ticklabel(fontsize=12, fontweight='demibold')
+        Dec_ax.set_ticklabel(fontsize=12, fontweight='demibold')
+
+        # Turn on minor ticks and set number of minor ticks
+        RA_ax.display_minor_ticks(True)
+        Dec_ax.display_minor_ticks(True)
+        RA_ax.set_minor_frequency(minorTicksFreq[0])
+        Dec_ax.set_minor_frequency(minorTicksFreq[1])
+
+        return axes
 
     def oplot_sources(self, satLimit=16e3, crowdLimit=0.0,
         s=100, marker='o', edgecolor='red', facecolor='none', **kwargs):

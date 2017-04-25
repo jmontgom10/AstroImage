@@ -848,7 +848,7 @@ class StokesParameters(object):
             'MAIER_PIECEWISE' :
 
         minimum_SNR : int or float, optional, default: 3.0
-            The minimum detected signa-to-noise ratio to require before
+            The minimum detected signal-to-noise ratio to require before
             rejecting the null-hypothesis: "There is no polarization here."
 
         PA_estimator : str, optional, default: 'NAIVE'
