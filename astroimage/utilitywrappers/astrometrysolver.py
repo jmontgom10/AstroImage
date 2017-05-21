@@ -7,6 +7,7 @@ import subprocess
 # Astropy imports
 from astropy.nddata import NDDataArray, StdDevUncertainty
 from astropy.io import fits
+from astropy.wcs import WCS
 
 # AstroImage imports
 from ..reduced import ReducedScience
@@ -415,10 +416,16 @@ class AstrometrySolver(object):
             # Clear out the old astrometry and insert new astrometry
             outImg.astrometry_to_header(wcs)
 
+            # Build the appropriate output uncertainty
+            if outImg._BaseImage__fullData.uncertainty is not None:
+                outUncert = StdDevUncertainty(outImg.uncertainty)
+            else:
+                outUncert = None
+
             # Place the same WCS in the output image __fullData attribute
             outImg._BaseImage__fullData = NDDataArray(
                 outImg.data,
-                uncertainty=StdDevUncertainty(outImg.uncertainty),
+                uncertainty=outUncert,
                 unit=outImg.unit,
                 wcs=wcs
             )
