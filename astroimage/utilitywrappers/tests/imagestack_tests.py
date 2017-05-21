@@ -103,7 +103,8 @@ def test_error_propagation():
     uncStack = np.array([img.uncertainty for img in imgStack.imageList])
 
     # Prop uncertainty
-    propagatedUnc = np.sqrt(np.mean(uncStack**2, axis=0))
+    numberOfImages = len(imgList)
+    propagatedUnc = np.sqrt(np.sum(uncStack**2, axis=0))/numberOfImages
 
     # Assert equality of numpy and ImageStack method
     assert np.all(propagatedUnc == comboImg.uncertainty)
