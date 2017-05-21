@@ -23,7 +23,7 @@ class NumericsMixin(object):
             otherData = other.convert_units_to(self.unit).data
 
             # Grab the uncertainty of the other image if possible
-            if other.uncertainty is not None:
+            if other.has_uncertainty:
                 otherUncert = other.uncertainty
             else:
                 otherUncert = 0.0
@@ -51,15 +51,34 @@ class NumericsMixin(object):
             raise TypeError('Cannot take modulus of {0} with {1} units and {2}'.format(
                 type(self).__name__, str(self.unit), type(other).__name__))
 
+        # Grab the uncertainty from the self instance
+        if self.has_uncertainty:
+            selfUncert = self.uncertainty
+        else:
+            selfUncert = 0.0
+
         # Attempt the modulus
         outData   = (self.data*self.unit) % otherData
-        outUncert = np.sqrt(self.uncertainty**2 + otherUncert**2)
+        outUncert = np.sqrt(selfUncert**2 + otherUncert**2)
+
+        # Double check that SOME kind of uncertainty exists here, and
+        # wrap it appropriately.
+        if np.all(outUncert == 0):
+            outUncert = None
+        else:
+            outUncert = StdDevUncertainty(outUncert)
 
         # Construct the output image
         outImg = self.copy()
-        outImg.data = outData
-        outImg.uncertainty = outUncert
-
+        try:
+            outImg._BaseImage__fullData = NDDataArray(
+                outData,
+                uncertainty=outUncert,
+                unit=outImg.unit,
+                wcs=outImg.wcs
+            )
+        except:
+            import pdb; pdb.set_trace()
         # Return the added image
         return outImg
 
@@ -246,7 +265,7 @@ class NumericsMixin(object):
         '''Computes the 'smart' arctan of the ratio of two images'''
         # Grab the data if posible
         if not self.has_dimensionless_units:
-            raise TypeError('Can only apply `arccos` function to dimensionless quantities')
+            raise TypeError('Can only apply `arctan` function to dimensionless quantities')
 
         if issubclass(type(other), BaseImage):
             # Handle BaseImage (or subclass) instance
@@ -296,7 +315,8 @@ class NumericsMixin(object):
         outData = np.arctan2(selfData, otherData)
 
         # Check if the uncertainty is "zero"
-        if np.all(selfUncert != 0) or np.all(otherUncert != 0):
+        uncertExists = not (np.all(selfUncert == 0) and np.all(otherUncert == 0))
+        if uncertExists:
             # Compute the propagated uncertainty
             # d/dx (arctan2(x,y)) = +x/(x^2 + y^2)
             # d/dy (arctan2(x,y)) = -y/(x^2 + y^2)

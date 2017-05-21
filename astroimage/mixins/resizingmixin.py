@@ -131,8 +131,8 @@ class ResizingMixin(object):
 
         # Check that the crop values are reasonable
         ny, nx = self.shape
-        if ((lf < 0) or (rt > (nx - 1)) or
-            (bt < 0) or (tp > (ny - 1)) or
+        if ((lf < 0) or (rt > nx) or
+            (bt < 0) or (tp > ny) or
             (rt < lf) or (tp < bt)):
             raise ValueError('The requested crop values are outside the image.')
 
@@ -209,87 +209,125 @@ class ResizingMixin(object):
         # Copy the image
         outImg = self.copy()
 
-        if self.has_wcs:
-            # Now treat the WCS
-            # Recompute the CRPIX and place them in the header
-            CRPIX1, CRPIX2 = self.wcs.wcs.crpix/dxdy
+        # Catch the case where there is no WCS to rebin
+        if not self.has_wcs:
+            return outImg
 
-            outImg.header['CRPIX1'] = CRPIX1
-            outImg.header['CRPIX2'] = CRPIX2
+        # Now treat the WCS for images which have astrometry.
+        # Recompute the CRPIX and place them in the header
+        CRPIX1, CRPIX2 = self.wcs.wcs.crpix/dxdy
 
-            # Grab the CD matrix
-            if self.wcs.wcs.has_cd():
-                # Grab the cd matrix and modify it by the rebinning factor
-                cd = dxdy*self.wcs.wcs.cd
+        outImg.header['CRPIX1'] = CRPIX1
+        outImg.header['CRPIX2'] = CRPIX2
 
-            elif self.wcs.wcs.has_pc():
-                # Convert the pc matrix into a cd matrix
-                cd = dxdy*self.wcs.wcs.cdelt*self.wcs.wcs.pc
+        # Grab the CD matrix
+        if self.wcs.wcs.has_cd():
+            # Grab the cd matrix and modify it by the rebinning factor
+            cd = dxdy*self.wcs.wcs.cd
 
-                # Delete the PC matrix so that it can be replaced with a CD matrix
-                del outImg.header['PC*']
+        elif self.wcs.wcs.has_pc():
+            # Convert the pc matrix into a cd matrix
+            cd = dxdy*self.wcs.wcs.cdelt*self.wcs.wcs.pc
 
-            else:
-                raise ValueError('`wcs` does not include proper astrometry')
+            # Delete the PC matrix so that it can be replaced with a CD matrix
+            del outImg.header['PC*']
 
-            # Loop through the CD values and replace them with updated values
-            for i, row in enumerate(cd):
-                for j, cdij in enumerate(row):
-                    key = 'CD' + '_'.join([str(i+1), str(j+1)])
-                    outImg.header[key] = cdij
+        else:
+            raise ValueError('`wcs` does not include proper astrometry')
 
-            # TODO: Verify that the SIP polynomial treatment is correct
-            # (This may require some trial and error)
+        # Loop through the CD values and replace them with updated values
+        for i, row in enumerate(cd):
+            for j, cdij in enumerate(row):
+                key = 'CD' + '_'.join([str(i+1), str(j+1)])
+                outImg.header[key] = cdij
 
-            # Loop through all possible coefficients, starting at the 2nd order
-            # values, JUST above the linear (CD matrix) relations.
-            for AB in ['A', 'B']:
-                ABorderKey = '_'.join([AB, 'ORDER'])
-                # Check if there is a distortion polynomial to handle.
-                if ABorderKey in outImg.header:
-                    highestOrder = outImg.header[ABorderKey]
-                    # Loop through each order (2nd, 3rd, 4th, etc...)
-                    for o in range(2,highestOrder+1):
-                        # Loop through each of the horizontal axis order values
-                        for i in range(o+1):
-                            # Compute the vertical axis order value for THIS order
-                            j = o - i
+        # TODO: Verify that the SIP polynomial treatment is correct
+        # (This may require some trial and error)
 
-                            # Compute the correction factor given the rebinning
-                            # amount along each independent axis.
-                            ABcorrFact = (dxdy[0]**i)*(dxdy[1]**j)
+        # Loop through all possible coefficients, starting at the 2nd order
+        # values, JUST above the linear (CD matrix) relations.
+        for AB in ['A', 'B']:
+            ABorderKey = '_'.join([AB, 'ORDER'])
+            # Check if there is a distortion polynomial to handle.
+            if ABorderKey in outImg.header:
+                highestOrder = outImg.header[ABorderKey]
+                # Loop through each order (2nd, 3rd, 4th, etc...)
+                for o in range(2,highestOrder+1):
+                    # Loop through each of the horizontal axis order values
+                    for i in range(o+1):
+                        # Compute the vertical axis order value for THIS order
+                        j = o - i
 
-                            # Construct the key in which the SIP coeff is stored
-                            ABkey = '_'.join([AB, str(i), str(j)])
+                        # Compute the correction factor given the rebinning
+                        # amount along each independent axis.
+                        ABcorrFact = (dxdy[0]**i)*(dxdy[1]**j)
 
-                            # Update the SIP coefficient
-                            outImg.header[ABkey] = ABcorrFact*self.header[ABkey]
+                        # Construct the key in which the SIP coeff is stored
+                        ABkey = '_'.join([AB, str(i), str(j)])
 
-                # Repeat this for the inverse transformation (AP_i_j, BP_i_j).
-                APBP = AB + 'P'
-                APBPorderKey = '_'.join([APBP, 'ORDER'])
-                if APBPorderKey in outImg.header:
-                    highestOrder = outImg.header[APBPorderKey]
-                    # Start at FIRST order this time...
-                    for o in range(1, highestOrder+1):
-                        for i in range(o+1):
-                            j = o - i
+                        # Update the SIP coefficient
+                        outImg.header[ABkey] = ABcorrFact*self.header[ABkey]
 
-                            # Skip the zeroth order (simply provided by CRVAL)
-                            if i == 0 and j == 0: continue
+            # Repeat this for the inverse transformation (AP_i_j, BP_i_j).
+            APBP = AB + 'P'
+            APBPorderKey = '_'.join([APBP, 'ORDER'])
+            if APBPorderKey in outImg.header:
+                highestOrder = outImg.header[APBPorderKey]
+                # Start at FIRST order this time...
+                for o in range(1, highestOrder+1):
+                    for i in range(o+1):
+                        j = o - i
 
-                            # Compute the correction factor and apply it.
-                            APBPcorrFact = (dxdy[0]**(-i))*(dxdy[1]**(-j))
-                            APBPkey = '_'.join([APBP, str(i), str(j)])
-                            outImg.header[APBPkey] = APBPcorrFact*self.header[APBPkey]
+                        # Skip the zeroth order (simply provided by CRVAL)
+                        if i == 0 and j == 0: continue
 
-            # Store the updated WCS and return the image to the user
-            outImg._BaseImage__fullData = NDDataArray(
-                outImg.data,
-                uncertainty=StdDevUncertainty(outImg.uncertainty),
-                unit=outImg.unit,
-                wcs=WCS(outImg.header)
-            )
+                        # Compute the correction factor and apply it.
+                        APBPcorrFact = (dxdy[0]**(-i))*(dxdy[1]**(-j))
+                        APBPkey = '_'.join([APBP, str(i), str(j)])
+                        outImg.header[APBPkey] = APBPcorrFact*self.header[APBPkey]
+
+        # Store the updated WCS and return the image to the user
+        outImg._BaseImage__fullData = NDDataArray(
+            outImg.data,
+            uncertainty=StdDevUncertainty(outImg.uncertainty),
+            unit=outImg.unit,
+            wcs=WCS(outImg.header)
+        )
+
+        return outImg
+
+    def _rebin_bzero_bscale(self, outShape):
+        """
+        Applies a rebinning to the BZERO and BSCALE parameters in the header.
+
+        Parameters
+        ----------
+        outShape : tuple of ints
+            The new shape for the rebinned image. This must be an integer factor
+            of the shape of the original image, although the integer factor does
+            not need to be the same along each axis.
+
+        Returns
+        -------
+        outImg : `astroimage.reduced.ReducedScience` (or subclass)
+            The rebinned image instance.
+
+        """
+
+        # Extract the shape and rebinning properties
+        ny1, nx1 = self.shape
+        ny, nx   = outShape
+        dxdy     = np.array([nx1/nx, ny1/ny])
+
+        outImg = self.copy()
+
+        bscale = self.header['BSCALE']
+        if (bscale != 0) and (bscale != 1):
+            outImg.header['BSCALE'] = ( bscale/pix_ratio, 'Calibration Factor')
+
+        bzero = self.header['BZERO']
+        if (bzero != 0):
+            outImg.header['BZERO'] = (bzero/pix_ratio, 'Additive Constant for Calibration')
 
         return outImg
 
@@ -315,7 +353,7 @@ class ResizingMixin(object):
         """
         # Grab the shape of the initial array
         ny0, nx0 = self.shape
-        ny, nx   = outShape
+        ny,  nx  = outShape
 
         # TODO: Catch the case of upsampling along one axis but downsampling
         # along the other. This should not be possible!
@@ -326,9 +364,12 @@ class ResizingMixin(object):
         if not (goodX and goodY):
             raise ValueError('Result dimensions must be integer factor of original dimensions')
 
+        # Make a copy of the image to manipulate and return to the user
+        outImg = self.copy()
+
         # First test for the trivial case
         if (nx0 == nx) and (ny0 == ny):
-            return self.copy()
+            return outImg
 
         # Compute the pixel ratios of upsampling and down sampling
         xratio, yratio = np.float(nx)/np.float(nx0), np.float(ny)/np.float(ny0)
@@ -368,7 +409,8 @@ class ResizingMixin(object):
 
                 # Check if total flux conservation was requested.
                 # If not, then multiply by the pixel size ratio.
-                if not total: rebinVariance *= pixRatio
+                if total: pass
+                if not total: rebinVariance *= (pixRatio**2)
 
             elif ((nx % nx0) == 0) and ((ny % ny0) == 0):
                 # Handle integer upsampling
@@ -380,6 +422,7 @@ class ResizingMixin(object):
                 # Check if total flux conservation was requested.
                 # If not, then divide by the pixel size ratio.
                 if total: rebinVariance /= pixRatio
+                if not total: rebinVariance *= pixRatio
 
             # Convert the uncertainty into the correct class for NDDataArray
             rebinUncert = StdDevUncertainty(np.sqrt(rebinVariance))
@@ -387,16 +430,24 @@ class ResizingMixin(object):
             # Handle the no-uncertainty situation
             rebinUncert = None
 
+        # Now apply header updates to the WCS parameters (BEFORE the current
+        # image shape gets distored by replacing the __fullData value.)
+        outImg = outImg._rebin_wcs(outShape)
+
+        # Now apply the header updates to BSCALE and BZERO keywords
+        if total:
+            raise NotImplementedError('Need to implement "_rebin_bscale_bzero" method')
+            outImg = outImg._rebin_bscale_bzero(outShape)
+
         # Construct the output NDDataArray
         rebinFullData = NDDataArray(
             rebinData,
             uncertainty=rebinUncert,
             unit=self._BaseImage__fullData.unit,
-            wcs=self._BaseImage__fullData.wcs
+            wcs=outImg.wcs
         )
 
-        # Return a copy of the image with a rebinned array
-        outImg = self.copy()
+        # Store the rebinned FullData
         outImg._BaseImage__fullData = rebinFullData
 
         # Update the header values
@@ -412,9 +463,6 @@ class ResizingMixin(object):
             outImg.binning[0]/xratio,
             outImg.binning[1]/yratio
         )
-
-        # Now apply header updates to the WCS parameters
-        outImg = outImg._rebin_wcs(outShape)
 
         # Return the updated image object
         return outImg
