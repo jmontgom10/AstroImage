@@ -60,10 +60,10 @@ class StokesParameters(object):
     @ClassProperty
     @classmethod
     def baseClass(cls):
-        """Quick reference to the BaseImage class"""
-        thisClass_methodResolutionOrder = cls.mro()
-        baseClass = thisClass_methodResolutionOrder[-2]
-        return baseClass
+        """Quick reference to the StokesParameters class"""
+        for thisClass in cls.mro():
+            if thisClass.__name__ == 'StokesParameters':
+                return thisClass
 
     # TODO: decide whether or not it's a good idea to use this method.
     @classmethod
@@ -107,19 +107,19 @@ class StokesParameters(object):
         storageDict = {}
 
         # Test if the PE constant wast provided
-        if 'PE' in constantDict:
-            storageDict['PE'] = constantDict['PE']
+        if 'PE' in constantDict.keys():
+            storageDict['PE'] = float(constantDict['PE'])
         else:
             storageDict['PE'] = 1.0
 
         # Test if the s_PE constant was provided
-        if 's_PE' in constantDict:
-            storageDict['s_PE'] = constantDict['s_PE']
+        if 's_PE' in constantDict.keys():
+            storageDict['s_PE'] = float(constantDict['s_PE'])
         else:
             storageDict['s_PE'] = 0.0
 
         # Test if the PAsign constant was provided
-        if 'PAsign' in constantDict:
+        if 'PAsign' in constantDict.keys():
             # Test if PAsign is an integer value
             try:
                 assert float(constantDict['PAsign']).is_integer()
@@ -138,7 +138,7 @@ class StokesParameters(object):
             storageDict['PAsign'] = +1
 
         # Test if the D_PA constant was provided
-        if 'D_PA' is constantDict:
+        if 'D_PA' in constantDict:
             # Test if provided value has angular units
             if not isinstance(constantDict['D_PA'], u.Quantity):
                 raise TypeError('`D_PA` value must be an astropy.units.quantity.Quantity instance')
@@ -151,7 +151,7 @@ class StokesParameters(object):
             storageDict['D_PA'] = u.Quantity(0.0, u.degree)
 
         # Test if the s_D_PA constant was provided
-        if 's_D_PA' is constantDict:
+        if 's_D_PA' in constantDict:
             # Test if provided value has angular units
             if not isinstance(constantDict['s_D_PA'], u.Quantity):
                 raise TypeError('`s_D_PA` value must be an astropy.units.quantity.Quantity instance')
@@ -164,7 +164,7 @@ class StokesParameters(object):
             storageDict['s_D_PA'] = u.Quantity(0.0, u.degree)
 
         # Now store the dictionary in the class variable
-        cls.__polarimeterCalibrationConstants = storageDict
+        cls.baseClass._StokesParameters__polarimeterCalibrationConstants = storageDict
 
     @ClassProperty
     @classmethod
@@ -176,7 +176,7 @@ class StokesParameters(object):
     @classmethod
     def s_PE(cls):
         """The uncertainty in the polarimetric efficiency calibration constant"""
-        return cls.baseClass.__polarimeterCalibrationConstants['PE']
+        return cls.baseClass.__polarimeterCalibrationConstants['s_PE']
 
     @ClassProperty
     @classmethod
@@ -450,7 +450,7 @@ class StokesParameters(object):
     ### START OF COMPUTING METHODS ###
     ##################################
 
-    def compute_stokes_parameters(self):
+    def compute_stokes_parameters(self, resolveAstrometry=True):
         """
         Converts the provided IPPA images to Stokes parameter images
 
@@ -477,6 +477,13 @@ class StokesParameters(object):
         under a coordinate frame rotation. So the frame rotation applied by
         the D_PA calibration constant has no effect on the uncertainty in Stokes
         U and Q parameters.
+
+        Parameters
+        ----------
+        resolveAstrometry : bool, optional, default: True
+            If set to False, then no astrometry solution will be done after
+            computing the Stokes parameter images. This should only be done if
+            an astrometry solution has been computed elsewhere.
         """
 
         # Test if the IPPA images are present
@@ -505,21 +512,26 @@ class StokesParameters(object):
             self._StokesParameters__ippaImages['I_135']
         )
 
-        # Trigger a re-solving of the image astrometry. Start by clearing data
-        # from the header.
-        stokesI.clear_astrometry()
+        # Remove any 'POLPOS' data from the header
+        # TODO: generalize this to permit other keywords such as 'HWPpos', etc..
         tmpHeader = stokesI.header
         del tmpHeader['POLPOS']
         stokesI.header = tmpHeader
 
-        # Create an AstrometrySolver instance and run it.
-        print('Solving astrometry for Stokes I image')
-        astroSolver = AstrometrySolver(stokesI)
-        stokesI, success = astroSolver.run(clobber=True)
+        # Resolve the astrometric solution if that was requested.
+        if resolveAstrometry:
+            print('Solving astrometry for Stokes I image')
+            # Clear out the filename so that the solver will use a TEMPORARAY file
+            # to find and solve the astrometry
+            stokesI.filename = ''
 
-        # Check if astrometric solution succeeded
-        if not success:
-            raise RuntimeError('Failed to solve astrometry of Stokes I image.')
+            # Create an AstrometrySolver instance and run it.
+            astroSolver = AstrometrySolver(stokesI)
+            stokesI, success = astroSolver.run(clobber=True)
+
+            # Check if astrometric solution succeeded
+            if not success:
+                raise RuntimeError('Failed to solve astrometry of Stokes I image.')
 
         #**********************************************************************
         # Stokes Q
@@ -564,19 +576,13 @@ class StokesParameters(object):
             uncertainty=np.array([[self.s_PE]])
         )
 
-        D_PA_image = ReducedScience(
-            np.array([[self.D_PA.value]]),
-            uncertainty=np.array([[self.s_D_PA.value]]),
-            properties={'unit':self.D_PA.unit}
-        )
-
         # Divide the Stokes Q and U images by the polarimetric efficiency, and
         # correct for any PAsign inversion.
-        stokesQcor1 = 1.0         * stokesQ/PE_image
-        stokesUcor1 = self.PAsign * stokesU/PE_image
+        stokesQ_Cor = stokesQ/PE_image
+        stokesU_Cor = stokesU/PE_image
 
         # Pause to compute the uncertainty is Stokes U and Q before rotating.
-        uncertInStokesQU = 0.5*(stokesQcor1.uncertainty + stokesUcor1.uncertainty)
+        uncertInStokesQU = 0.5*(stokesQ_Cor.uncertainty + stokesU_Cor.uncertainty)
 
         # # Propagate any uncertainty in D_PA into the uncertInStokesQU variable
         #
@@ -587,19 +593,35 @@ class StokesParameters(object):
         #     self.s_D_PA**2
         # )
 
-        # Rotate the Q and U images by the PA offset
-        stokesQcor2 = (
-            np.cos(2*self.D_PA).value*stokesQcor1 -
-            np.sin(2*self.D_PA).value*stokesUcor1
+        # Grab the rotation of these images with respect to celestial north
+        Qrot = stokesQ.rotation
+        Urot = stokesU.rotation
+
+        # Test if Q and U have similar rotation angle
+        if np.abs(Qrot - Urot) < (0.4*u.deg):
+            # Add rotation angle to final deltaPA
+            final_D_PA = self.D_PA + Qrot
+        else:
+            raise ValueError('The astrometry in U and Q do not seem to match.')
+
+        # Rotate the coordinate frome by the (2 x PA offset) to get Q and U
+        # values into the equatorial frame.
+        stokesQ_CorRot = (
+            (np.cos(2*final_D_PA).value)*stokesQ_Cor.data +
+            (np.sin(2*final_D_PA).value)*stokesU_Cor.data
         )
-        stokesUcor2 = (
-            np.sin(2*self.D_PA).value*stokesQcor1 +
-            np.cos(2*self.D_PA).value*stokesUcor1
+        stokesU_CorRot = self.PAsign*(
+            (-np.sin(2*final_D_PA).value)*stokesQ_Cor.data +
+            (+np.cos(2*final_D_PA).value)*stokesU_Cor.data
         )
+
+        # If we assume that the uncertainty in Q and U are equal (as we have
+        # asserted in the lines above), then the error propagation for the
+        # rotated Q and U values has no effect on the uncertainty.
 
         # Construct a new image force to share the stokesI header
         stokesQ = ReducedScience(
-            stokesQcor2.data,
+            stokesQ_CorRot,
             uncertainty=uncertInStokesQU,
             header=stokesI.header,
             properties={'unit': u.dimensionless_unscaled}
@@ -607,7 +629,7 @@ class StokesParameters(object):
 
         # Construct a new image force to share the stokesI header
         stokesU = ReducedScience(
-            stokesUcor2.data,
+            stokesU_CorRot,
             uncertainty=uncertInStokesQU,
             header=stokesI.header,
             properties={'unit': u.dimensionless_unscaled}
@@ -636,60 +658,56 @@ class StokesParameters(object):
             # compute an average uncertainty and assign it to the P_image.
             P_image.uncertainty = 100*0.5*(self.Q.uncertainty + self.U.uncertainty)
 
-        elif P_estimator.upper() == 'WARDLE_KRONBERG':
+        elif P_estimator.upper() == 'ASYMPTOTIC':
             #####
             # Handle the ricean correction using Wardle and Kronberg (1974)
             #####
             # Quickly build the P map
-            P_image = np.sqrt(self.Q.data**2 + self.U.data**2)
+            P_data = np.sqrt(self.Q.data**2 + self.U.data**2)
 
             # Apply the bias correction. The sigma which determines the Rice
             # distribution properties is the width of the Stokes Parameter
             # distribution, so we will simply compute an average uncertainty and
-            # assign it to the P_image.
-            smap = 0.5*(self.Q.uncertainty + self.U.uncertainty)
-
-            import matplotlib.pyplot as plt
-            plt.ion()
-            plt.imshow(P_image.data/smap, vmin=0, vmax=0.01)
-
-            # WHY ISN'T THIS SHOWING ANYTHING?
-            import pdb; pdb.set_trace()
+            # assign it to the P_data.
+            P_uncertainty = 0.5*(self.Q.uncertainty + self.U.uncertainty)
 
             # This is the old correction we were using before I reread the
             # Wardle and Kronberg paper... it is even MORE aggresive than the
             # original recomendation
 
             # Catch any stupid values (nan, inf, etc...)
-            badVals = np.logical_not(np.logical_and(
-                np.isfinite(P_image.data),
-                np.isfinite(smap)))
+            badVals = np.logical_not(
+                np.logical_and(
+                    np.isfinite(P_data),
+                    np.isfinite(P_uncertainty)
+                )
+            )
 
             # Replace the stupid values with zeros
             if np.sum(badVals) > 0:
-                badInds               = np.where(badVals)
-                P_image.data[badInds] = 0.0
-                smap[badInds]         = 1.0
+                badInds                = np.where(badVals)
+                P_data[badInds]        = 0.0
+                P_uncertainty[badInds] = 1.0
 
             # Check which measurements don't match the minimum SNR
-            zeroVals = P_image/smap <= minimum_SNR
+            zeroVals = P_data/P_uncertainty <= minimum_SNR
             numZero  = np.sum(zeroVals.astype(int))
             if numZero > 0:
                 # Make sure the square-root does not produce NaNs
-                zeroInds               = np.where(zeroVals)
-                P_image.data[zeroInds] = 2*smap[zeroInds]
+                zeroInds         = np.where(zeroVals)
+                P_data[zeroInds] = 2*P_uncertainty[zeroInds]
 
             # Compute the "debiased" polarization map
-            tmpP =  P_image.data*np.sqrt(1.0 - (smap/P_image.data)**2)
+            P_data = P_data*np.sqrt(1.0 - (P_uncertainty/P_data)**2)
 
             if numZero > 0:
                 # Set all insignificant detections to zero
-                tmpP[zeroInds] = 0.0
+                P_data[zeroInds] = 0.0
 
             # Now we can safely take the sqare root of the debiased values
             P_image             = np.sqrt(self.Q**2 + self.U**2)
-            P_image.data        = 100*tmpP
-            P_image.uncertainty = 100*smap
+            P_image.data        = 100*P_data
+            P_image.uncertainty = 100*P_uncertainty
 
         elif P_estimator.upper() == 'MAIER_PIECEWISE':
             # The following is taken from Maier et al. (2014) (s = sigma_q ==
@@ -789,20 +807,6 @@ class StokesParameters(object):
         Computes the polarization image using the specified estimator.
         """
 
-        # TODO: this should be placed into the matrix rotation when executing
-        # 'compute_stokes_parameters'.
-        #
-        # # Grab the rotation of these images with respect to celestial north
-        # Qrot = self.Q.rotation
-        # Urot = self.U.rotation
-        #
-        # # Test if both Q and U have astrometry
-        # if Qrot == Urot:
-        #     # Add rotation angle to final deltaPA
-        #     self.D_PA += Qrot
-        # else:
-        #     raise ValueError('The astrometry in U and Q do not seem to match.')
-
         # PA estimation
         ############################################################################
         # Estimate of the polarization position angle using the requested method.
@@ -815,10 +819,23 @@ class StokesParameters(object):
                 (180.0*u.degree)
             )
 
-            # # TODO: implement the MAIER_ET_AL PA uncertainty estimation.
-            #
-            # if s_DPA > 0.0:
-            #     PA_image.uncertainty = np.sqrt(PA_image.uncertainty**2 + s_DPA**2)
+            # Compute the naive polarization, again, just to get an accurate SNR
+            P_image = self._compute_polarization_percentage(P_estimator='NAIVE')
+
+            # Locate pixels with SNR < 6
+            P_SNR        = P_image.snr
+            lowSNRpixels = (P_SNR < 6)
+            lowSNRinds   = np.where(lowSNRpixels)
+
+            # Replace these s_PA estimates with better, broader, estimates.
+            if PA_image.has_uncertainty:
+                tmpUncert  = PA_image.uncertainty
+                lowSNRvals = (
+                    32.50*(1.350 + np.tanh(0.739*(0.801 - P_SNR))) -
+                    1.154*P_SNR
+                )
+                tmpUncert[lowSNRinds] = lowSNRvals[lowSNRinds]
+                PA_image.uncertainty  = tmpUncert
 
         elif PA_estimator.upper() == 'MAX_LIKELIHOOD_1D':
             raise NotImplementedError()
@@ -829,19 +846,19 @@ class StokesParameters(object):
 
         return PA_image
 
-    def compute_polarization_images(self, P_estimator='NAIVE', minimum_SNR=3.0,
+    def compute_polarization_images(self, P_estimator='NAIVE', minimum_SNR=2.5,
         PA_estimator='NAIVE'):
         """
         Computes the polarization images from the Stokes parameter images.
 
         Parameters
         ----------
-        P_estimator : str, optional, default: 'WARDLE_KRONBERG'
+        P_estimator : str, optional, default: 'NAIVE'
             The estimator to use when computing polarization percentage.
 
             'NAIVE' :
 
-            'WARDLE_KRONBERG' :
+            'ASYMPTOTIC' :
 
             'MODIFIED_ASYMPTOTIC' :
 
