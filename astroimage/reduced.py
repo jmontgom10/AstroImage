@@ -203,7 +203,7 @@ class ReducedImage(BaseImage):
         """
         # Test if arr is a numpy array
         if not isinstance(uncert, np.ndarray):
-            raise TypeError('`untert` must be an instance of numpy.ndarray')
+            raise TypeError('`uncert` must be an instance of numpy.ndarray')
 
         # Test if the replacement array matches the previous array's shape
         if uncert.shape != self.shape:
@@ -285,15 +285,12 @@ class ReducedImage(BaseImage):
         if not self.has_uncertainty:
             raise ValueError('No `uncertainty` array in this instance to compute SNR.')
 
-        # Compute the signal-to-noise
-        snr = self.data/self.uncertainty
-
         # Build the appropriate axes for this object
         axes = self._build_axes(axes=axes)
 
         # TODO: Figure out whether or not to store this AxesImage instance
         # Display the signal-to-noise ratio
-        image = self._show_array(snr,  axes=axes, cmap=cmap, vmin=vmin,
+        image = self._show_array(self.snr,  axes=axes, cmap=cmap, vmin=vmin,
             vmax=vmax, origin=origin, interpolation=interpolation,
             noShow=noShow, stretch=stretch, **kwargs)
 
@@ -900,47 +897,8 @@ class ReducedScience(ResizingMixin, NumericsMixin, ReducedImage):
             # Subtract the fitted background values plane
             starCutout -= planeVals
 
-            # Store the total of this array for sorting later
-            starFlux = starCutout.sum()
-            starFluxes.append(starFlux)
-
-            # Normalize the cutout to be have a total of one
-            starCutout /= starFlux
-
             # Store the patch in the starCutouts
             starCutouts.append(starCutout)
-
-        # Resort these stars from brightest to dimmest
-        sortInds    = np.array(starFluxes).argsort()
-        sortInds    = sortInds[::-1]
-        starCutouts = np.array(starCutouts)[sortInds]
-
-        # # For some reason, the initial plane subtraction doesn't always do the
-        # # trick, so take a second pass at the normalized version.
-        # finalizedCutoutList = []
-        # for starCutout in starCutouts:
-        #     # Fit a plane to the corner samples
-        #     xyzPts = np.array(xyPts + (starCutout[xyPts],))
-        #     point, normalVec = planeFit(xyzPts)
-        #
-        #     # Compute the value of the fited plane background
-        #     planeVals = (
-        #         point[2] +
-        #         (normalVec[0]/normalVec[2])*(xx - point[0]) +
-        #         (normalVec[1]/normalVec[2])*(yy - point[1])
-        #     )
-        #
-        #     # Subtract the fitted plane values
-        #     starCutout1 = starCutout - planeVals
-        #
-        #     # Normalize by the sum of pixel values in this cutout
-        #     starCutout1 /= starCutout.sum()
-        #
-        #     # Append to the finalizedCutoutList
-        #     finalizedCutoutList.append(starCutout1)
-        #
-        # # Convert this to an array
-        # starCutouts = np.array(finalizedCutoutList)
 
         return starCutouts
 
@@ -1571,6 +1529,20 @@ class ReducedScience(ResizingMixin, NumericsMixin, ReducedImage):
         -------
         out : None
         """
+        # Check if the provided wcs is the right type
+        if not isinstance(wcs, WCS):
+            raise TypeError('`wcs` must be an astropy.wcs.wcs.WCS instance.')
+
+        # Check if the provided wcs has actual astrometry.
+        if wcs.wcs.has_cd():
+            # Grab the cd matrix
+            cd = wcs.wcs.cd
+        elif wcs.wcs.has_pc():
+            # Convert the pc matrix into a cd matrix
+            cd = wcs.wcs.cdelt*wcs.wcs.pc
+        else:
+            raise ValueError('`wcs` does not include proper astrometry')
+
         # Start by clearing out the old astrometric information
         self.clear_astrometry()
 
@@ -1617,15 +1589,6 @@ class ReducedScience(ResizingMixin, NumericsMixin, ReducedImage):
         if len(wcsHeader['CDELT*']) > 0:
             del wcsHeader['CDELT*']
 
-        if wcs.wcs.has_cd():
-            # Grab the cd matrix
-            cd = wcs.wcs.cd
-        elif wcs.wcs.has_pc():
-            # Convert the pc matrix into a cd matrix
-            cd = wcs.wcs.cdelt*wcs.wcs.pc
-        else:
-            raise ValueError('`wcs` does not include proper astrometry')
-
         # Loop through the CD values and replace them with updated values
         for i, row in enumerate(cd):
             for j, cdij in enumerate(row):
@@ -1634,6 +1597,19 @@ class ReducedScience(ResizingMixin, NumericsMixin, ReducedImage):
 
         # Update the header
         self._BaseImage__header.update(wcsHeader)
+
+        if self.has_uncertainty:
+            outUncert = StdDevUncertainty(self.uncertainty)
+        else:
+            outUncert = None
+
+        # Store WCS in the proper MASTER variable for later retrieval.
+        self._BaseImage__fullData = NDDataArray(
+            self.data,
+            uncertainty=outUncert,
+            unit=self.unit,
+            wcs=wcs
+        )
 
         return None
 
