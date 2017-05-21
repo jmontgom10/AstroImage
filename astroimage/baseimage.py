@@ -196,6 +196,9 @@ class BaseImage(object):
         # define FLOAT_IMG   -32  /* 32-bit single precision floating point */
         # define DOUBLE_IMG  -64  /* 64-bit double precision floating point */
 
+        # Convert the input dtype into standard numpy format
+        testDtype = np.dtype(dtype.type)
+
         # Check which data type has been provided
         dtypes = (
             np.dtype(np.uint8),
@@ -206,14 +209,13 @@ class BaseImage(object):
             np.dtype(np.float64)
         )
 
-        if dtype not in dtypes:
+        if testDtype not in dtypes:
             raise ValueError('{0} is not a permissible data type for fits images'.format(dtype))
-
 
         bitpixes = (8, 16, 32, 64, -32, -64)
         bitpixDict = dict(zip(dtypes, bitpixes))
 
-        return bitpixDict[dtype]
+        return bitpixDict[testDtype]
 
     ##################################
     ### END OF STATIC METHODS      ###
@@ -425,10 +427,47 @@ class BaseImage(object):
         # Initalize keyword argument dictionary for __init__ call
         initKwargs = {}
 
-        # Grab the header from HDUlist set BZERO and BSCALE to trivial values
-        thisHeader = HDUlist[0].header
-        thisHeader['BZERO'] = 0
-        thisHeader['BSCALE'] = 1
+        # # TODO: treat the BITPIX header value more correctly!
+        # # See the following wedsite:
+        # # http://docs.astropy.org/en/stable/io/fits/
+        # #
+        # # Determine the appropriate data type for the array.
+        # if floatFlag:
+        #     if numBits >= 64:
+        #         dataType = np.dtype(np.float64)
+        #     else:
+        #         dataType = np.dtype(np.float32)
+        # else:
+        #     if numBits >= 64:
+        #         dataType = np.dtype(np.int64)
+        #     elif numBits >= 32:
+        #         dataType = np.dtype(np.int32)
+        #     else:
+        #         dataType = np.dtype(np.int16)
+
+        # Loop through the HDUlist and check for an 'UNCERTAINTY' HDU
+        for HDU in HDUlist:
+            # Store the data as the correct data type
+            if (isinstance(HDU, fits.hdu.image.PrimaryHDU) and HDU.data is not None):
+                thisData = HDU.data#.astype(dataType)
+
+                # # TODO: test if this is an unsigned integer and handle accordingly
+                # Examine the astropy.io.fits.PrimaryHDU class etc... for some ideas on \
+                # how to handle this
+
+                # Grab the header from HDUlist set BZERO and BSCALE to trivial values
+                thisHeader = HDU.header
+                thisHeader['BZERO'] = 0
+                thisHeader['BSCALE'] = 1
+
+                continue
+
+            if (HDU.name.upper() == 'UNCERTAINTY' and HDU.data is not None):
+                initKwargs['uncertainty'] = HDU.data
+                continue
+
+        # Cleanup and close the HDUlist object
+        HDUlist.close()
 
         # Store the header in the dictionary of arguments to pass to __init__
         initKwargs['header'] = thisHeader
@@ -436,35 +475,6 @@ class BaseImage(object):
         # Parse the number of bits used for each pixel
         floatFlag = thisHeader['BITPIX'] < 0
         numBits   = np.abs(thisHeader['BITPIX'])
-
-        # TODO: treat the BITPIX header value more correctly!
-        # See the following wedsite:
-        # http://docs.astropy.org/en/stable/io/fits/
-        #
-        # Determine the appropriate data type for the array.
-        if floatFlag:
-            if numBits >= 64:
-                dataType = np.dtype(np.float64)
-            else:
-                dataType = np.dtype(np.float32)
-        else:
-            if numBits >= 64:
-                dataType = np.dtype(np.int64)
-            elif numBits >= 32:
-                dataType = np.dtype(np.int32)
-            else:
-                dataType = np.dtype(np.int16)
-
-        # Store the data as the correct data type
-        thisData = HDUlist[0].data.astype(dataType)
-
-        # Loop through the HDUlist and check for an 'UNCERTAINTY' HDU
-        for HDU in HDUlist:
-            if HDU.name.upper() == 'UNCERTAINTY':
-                initKwargs['uncertainty'] = HDU.data
-
-        # Cleanup and close the HDUlist object
-        HDUlist.close()
 
         # Pass the properties along to the __init__ method
         initKwargs['properties'] = properties
@@ -593,7 +603,11 @@ class BaseImage(object):
                     # Store the unit in the keyword arguements for the NDData object
                     kwargsForNDData['unit'] = u.Unit(thisUnit)
                 except:
-                    raise #TypeError('`unit` property must be convertible to an astropy.units unit')
+                    warnings.warn(
+                        '`unit` property was not convertible to an astropy.units instance.'
+                        'Using dimensionless_unscaled units.'
+                    )
+                    kwargsForNDData['unit'] = u.dimensionless_unscaled
             else:
                 raise TypeError('`unit` property must be a string or an astropy.units.Unit')
         else:
@@ -1738,6 +1752,7 @@ class BaseImage(object):
         # Catch a bad dtype error
         try:
             dtype1 = np.dtype(dtype)
+            dtype1 = np.dtype(dtype1.type)
         except:
             raise TypeError('data type not understood')
 
@@ -1801,6 +1816,8 @@ class BaseImage(object):
             outUncert      = StdDevUncertainty(outUncert.value)
         else:
             outUncert = None
+
+        # TODO: update header information to match the current data array
 
         # Construct the output image
         outImg = self.copy()
