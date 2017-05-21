@@ -225,6 +225,120 @@ class ImagePairOffsetGetter(object):
         return dx, dy
 
     @staticmethod
+    def _parse_star_cutouts(starCutouts1, starCutouts2):
+        """
+        Decides which cutouts to use for sub-pixel alignment.
+
+        The provided star cutouts will be quality checked. Those cutouts which
+        do not meet the minimum quality criteria will be tossed from the stacks.
+
+        Parameters
+        ----------
+        starCutouts1, starCutouts2 : array_like
+            A stack of star cutouts, each center on on a star
+
+        Returns
+        -------
+        outStarCutouts1, outStarCutouts2 : array_like
+            A quality-cut stack of star cutouts, each center on on a star.
+        """
+        # Start by parsing the properties of ALL the cutouts
+        cutoutCorrelationCoeffs1 = []
+        cutoutCorrelationCoeffs2 = []
+        cutoutElongations1       = []
+        cutoutElongations2       = []
+        normalizedStarCutouts1   = []
+        normalizedStarCutouts2   = []
+        averageCutoutFlux        = []
+        for starCutout1, starCutout2 in zip(starCutouts1, starCutouts2):
+            # Measure the properties of this cutout
+            cutoutProperties1 = data_properties(starCutout1)
+            cutoutProperties2 = data_properties(starCutout2)
+
+            # Grab the elongation property
+            cutoutElongations1.append(cutoutProperties1.elongation)
+            cutoutElongations2.append(cutoutProperties2.elongation)
+
+            # Grab the correlation coefficient property
+            correlationCoeff1 = (
+                cutoutProperties1.covar_sigxy /
+                (
+                    cutoutProperties1.semimajor_axis_sigma *
+                    cutoutProperties1.semiminor_axis_sigma
+                )
+            )
+            correlationCoeff2 = (
+                cutoutProperties2.covar_sigxy /
+                (
+                    cutoutProperties2.semimajor_axis_sigma *
+                    cutoutProperties2.semiminor_axis_sigma
+                )
+            )
+
+            # Store the correlation coefficients in lists
+            cutoutCorrelationCoeffs1.append(correlationCoeff1)
+            cutoutCorrelationCoeffs2.append(correlationCoeff2)
+
+            # Compute the total flux of each star
+            cutoutFlux1 = starCutout1.sum()
+            cutoutFlux2 = starCutout2.sum()
+
+            # Normalize the cutouts to have a total of one
+            normalizedStarCutouts1.append(starCutout1/cutoutFlux1)
+            normalizedStarCutouts2.append(starCutout2/cutoutFlux2)
+
+            # Compute an average flux for this star and store it
+            starCutoutFlux = 0.5*(cutoutFlux1 + cutoutFlux2)
+            averageCutoutFlux.append(starCutoutFlux)
+
+        # Convert these to arrays
+        cutoutCorrelationCoeffs1 = np.array(cutoutCorrelationCoeffs1)
+        cutoutCorrelationCoeffs2 = np.array(cutoutCorrelationCoeffs2)
+        cutoutElongations1       = np.array(cutoutElongations1)
+        cutoutElongations2       = np.array(cutoutElongations2)
+        normalizedStarCutouts1   = np.array(normalizedStarCutouts1)
+        normalizedStarCutouts2   = np.array(normalizedStarCutouts2)
+        averageCutoutFlux        = np.array(averageCutoutFlux)
+
+        # Sort the cutouts from brightest to dimmest
+        # Grab the sorting index ordering
+        sortInds = averageCutoutFlux.argsort()
+        sortInds = sortInds[::-1]
+
+        # Apply the sorting array.
+        cutoutCorrelationCoeffs1 = cutoutCorrelationCoeffs1[sortInds]
+        cutoutCorrelationCoeffs2 = cutoutCorrelationCoeffs2[sortInds]
+        cutoutElongations1       = cutoutElongations1[sortInds]
+        cutoutElongations2       = cutoutElongations2[sortInds]
+        normalizedStarCutouts1   = normalizedStarCutouts1[sortInds]
+        normalizedStarCutouts2   = normalizedStarCutouts2[sortInds]
+        averageCutoutFlux        = averageCutoutFlux[sortInds]
+
+        # Find the cutouts with good correlation coefficients
+        goodCorrelationCoeffs = np.logical_and(
+            np.abs(cutoutCorrelationCoeffs1 - np.median(cutoutCorrelationCoeffs1)) < 0.1,
+            np.abs(cutoutCorrelationCoeffs2 - np.median(cutoutCorrelationCoeffs2)) < 0.1
+        )
+
+        # Find the cutouts with good elogation values
+        goodElongations = np.logical_and(
+            cutoutElongations1 < 1.4,
+            cutoutElongations2 < 1.4
+        )
+
+        # Find the cutouts with good everything....
+        goodCutouts = np.logical_and(
+            goodCorrelationCoeffs,
+            goodElongations
+        )
+
+        # Cull the cutouts to only include the good cutouts
+        goodCutoutInds = np.where(goodCutouts)
+
+        return (normalizedStarCutouts1[goodCutoutInds],
+            normalizedStarCutouts2[goodCutoutInds])
+
+    @staticmethod
     def _build_star_cutout_mosaic(starCutouts):
         """
         Constructs a mosaic of star cutouts.
@@ -248,16 +362,19 @@ class ImagePairOffsetGetter(object):
         if starCutouts.ndim != 3:
             raise ValueError('`starCutouts` must be a (numbor of stars X cutout size x cutout size) array')
 
-        # Count the number of cutouts
+
+        # Get the number and shape of the remaining star cutouts
         numberOfStars, ny, nx = starCutouts.shape
 
         # Cull the list to the brightest square number of stars
-        if numberOfStars > 25:
+        if numberOfStars >= 25:
             keepStarCount = 25
-        elif numberOfStars > 16:
+        elif numberOfStars >= 16:
             keepStarCount = 16
-        elif numberOfStars > 9:
+        elif numberOfStars >= 9:
             keepStarCount = 9
+        elif numberOfStars >= 4:
+            keepStarCount = 4
         else:
             raise RuntimeError('Fewer than 9 stars found: cannot build star cutout mosaic')
 
@@ -266,21 +383,7 @@ class ImagePairOffsetGetter(object):
         cutoutMosaic = np.zeros((numZoneSide*ny, numZoneSide*nx))
 
         # Loop through each star to be placed in the mosaic
-        iStar = 0
-        for starCutout in starCutouts:
-            # Measure the properties of this cutout
-            cutoutProperties = data_properties(starCutout)
-
-            correlationCoeff = (
-                cutoutProperties.covar_sigxy /
-                (
-                    cutoutProperties.semimajor_axis_sigma *
-                    cutoutProperties.semiminor_axis_sigma
-                )
-            )
-            # Skip any stars that don't pass this roundness test.
-            if np.abs(correlationCoeff) > 0.1: continue
-
+        for iStar, starCutout in enumerate(starCutouts[0:keepStarCount]):
             # Compute the zone for this star
             yZone, xZone = np.unravel_index(iStar, (numZoneSide, numZoneSide))
 
@@ -292,12 +395,6 @@ class ImagePairOffsetGetter(object):
 
             # Paste the cutout into the star mosaic
             cutoutMosaic[btPaste:tpPaste, lfPaste:rtPaste] = starCutout
-
-            # Increment the number of stars that have been pasted
-            iStar += 1
-
-            # If the mosaic is full, then break out of the loop
-            if iStar >= keepStarCount: break
 
         return cutoutMosaic
 
@@ -429,19 +526,22 @@ class ImagePairOffsetGetter(object):
         dx, dy : float
             The precise offset of self.image1 with respect to self.image2
         """
-        # Test if a quick WCS integer pixel alignment is possible.
-        if self.image1.has_wcs and self.image2.has_wcs:
-            # Compute the integer pixel offsets using WCS
-            dx, dy = self.get_wcs_integer_pixel_offset()
-        else:
-            # Compute the integer pixel offsets using cross-correlation
-            dx, dy = self.get_cross_correlation_integer_pixel_offset()
+        # TODO: Test if rough pixel-level alignment is required
+        pass
 
-        # Shift image2 array to approximately match image1
-        shiftedImage2 = self.image2.shift(-dx, -dy)
+        # # Test if a quick WCS integer pixel alignment is possible.
+        # if self.image1.has_wcs and self.image2.has_wcs:
+        #     # Compute the integer pixel offsets using WCS
+        #     dx, dy = self.get_wcs_integer_pixel_offset()
+        # else:
+        #     # Compute the integer pixel offsets using cross-correlation
+        #     dx, dy = self.get_cross_correlation_integer_pixel_offset()
+        #
+        # # Shift image2 array to approximately match image1
+        # shiftedImage2 = self.image2.shift(-dx, -dy)
 
         # Compute a combined image and extract stars from that combined image
-        combinedImage  = 0.5*(self.image1 + shiftedImage2)
+        combinedImage  = 0.5*(self.image1 + self.image2)
 
         xStars, yStars = combinedImage.get_sources(
             satLimit = satLimit,
@@ -454,8 +554,15 @@ class ImagePairOffsetGetter(object):
             cutoutSize = cutoutSize)
 
         # Grab the list of star cutouts from shifted image two
-        starCutouts2 = shiftedImage2.extract_star_cutouts(xStars, yStars,
+        starCutouts2 = self.image2.extract_star_cutouts(xStars, yStars,
             cutoutSize = cutoutSize)
+
+        # Cull any bad cutouts from the cutout list
+        starCutouts1, starCutouts2 = self._parse_star_cutouts(
+            starCutouts1,
+            starCutouts2
+        )
+
 
         # Build the square mosaics of cutouts
         cutoutMosaic1 = self._build_star_cutout_mosaic(starCutouts1)
@@ -484,11 +591,11 @@ class ImagePairOffsetGetter(object):
         corrImage = ImagePairOffsetGetter._fix_bad_correlation_image_pixels(corrImage)
 
         # Grab the subpixel precision offsets from the cross correlation image
-        dx1, dy1 = ImagePairOffsetGetter._extract_subpixel_offset_from_correlation_image(corrImage)
+        dx, dy = ImagePairOffsetGetter._extract_subpixel_offset_from_correlation_image(corrImage)
 
-        # Add the integer and subpixel offsets and return them to the user
-        dx += dx1
-        dy += dy1
+        # # Add the integer and subpixel offsets and return them to the user
+        # dx += dx1
+        # dy += dy1
 
         return dx, dy
 
@@ -544,13 +651,6 @@ class ImageStack(object):
         # Check that a list (or something close o it) was provided
         if not hasattr(imageList, '__iter__'):
             raise TypeError('`imageList` must be a list or iterable object containing image instances')
-
-        # if not issubclass(type(imageList), list):
-        #     # Attempt to convert
-        #     try:
-        #         pass
-        #     except:
-        #         raise TypeError('`imageList` must be a list or iterable object containing image instances')
 
         # Start by counting the number of images
         numberOfImages = len(imageList)
@@ -857,24 +957,46 @@ class ImageStack(object):
         if self.numberOfImages <= 1:
             return (0, 0)
 
-        # Define the first image in the list as the reference image
-        refImage = self.imageList[0]
+        # Grab the appropriate reference image depending on whether or not the
+        # image stack has already been aligned...
+        if self.aligned:
+            # If subPixel accurace was requested, then start by constructing
+            # a reference image to be used in sub-pixel alignment.
+            referenceImage = self.build_median_image()
 
-        # Initalize lists for storing offsets and shapes, and use the FIRST
-        # image in the list as the reference image for now.
-        xPos = [0]
-        yPos = [0]
+            # Initalize lists for storing offsets and shapes, and use the FIRST
+            # image in the list as the reference image for now.
+            xPos = []
+            yPos = []
+
+            # Which image should be the FIRST image to align? Start with the 0th
+            # image because we've constructed a separate `referenceImage`
+            startInd = 0
+
+        else:
+            referenceImage = self.imageList[0]
+            # Initalize lists for storing offsets and shapes, and use the FIRST
+            # image in the list as the reference image for now.
+            xPos = [0]
+            yPos = [0]
+
+            # Which image should be the FIRST image to align? Skip the 0th image
+            # in this case because it is serving as the referenc image.
+            startInd = 1
 
         # Loop through the rest of the images.
         # Use cross-correlation to get relative offsets,
         # and accumulate image shapes
         progressString = 'Aligning image {0} of {1}'
-        for imgNum, image in enumerate(self.imageList[1:]):
+        for imgNum, image in enumerate(self.imageList[startInd:]):
             # Update the user on the progress
-            print(progressString.format(imgNum+2, numberOfImages), end='\r')
+            print(progressString.format(imgNum+startInd+1, numberOfImages), end='\r')
 
-            # Compute actual image offset between reference and image
-            imgPair = ImagePairOffsetGetter(refImage, image)
+            # Construct an image pair using the reference image
+            imgPair = ImagePairOffsetGetter(
+                referenceImage,
+                image
+            )
 
             # Grab subpixel or integer offsets depending on what was requested
             if subPixel:
@@ -890,6 +1012,7 @@ class ImageStack(object):
         # Print a new line for shell output
         print('')
 
+        # TODO: delete these lines if everything is working correctly.
         # Compute the relative pointings from the median position
         dx = np.median(xPos) - np.array(xPos)
         dy = np.median(yPos) - np.array(yPos)
@@ -897,7 +1020,10 @@ class ImageStack(object):
         if subPixel:
             # If sub pixel offsets were requested, then add a small `epsilon` to
             # ensure that none of the images have a zero offset.
-            dx, dy = self._force_non_integer_offsets(dx, dy)
+            dx, dy = self._force_non_integer_offsets(
+                np.array(dx),
+                np.array(dy)
+            )
         else:
             # If integer pixel offsets were requested, then round each offset to
             # its nearest integer value.
@@ -992,6 +1118,34 @@ class ImageStack(object):
             # Return the image to the imageList (at the END of the list)
             self.add_image(thisImg)
 
+    def build_median_image(self):
+        """
+        Computes fast median image of an aligned image stack.
+
+        Returns
+        -------
+        medianImage : `~astroimage.reduced.ReducedScience`
+            The median of the image stack.
+        """
+        # Check if the image stack has been aligned
+        if not self.aligned:
+            raise RuntimeError('ImageStack must be aligned before a median image can be computed')
+
+        # Stack the data arrays
+        dataStack = np.array([img.data for img in self.imageList])
+
+        # Compute the median of the data stack
+        medianData = np.nanmedian(dataStack, axis=0)
+
+        # Copy the first image in the image stack and replace its data
+        medianImage = self.imageList[0].copy()
+        medianImage.data = medianData
+
+        # Store the median image in the medianImage attribute
+        self.medianImage = medianImage
+
+        return medianImage
+
     def align_images_with_wcs(self, subPixel=False, padding=0):
         """
         Aligns the whole stack of images using the astrometry in the header.
@@ -1059,24 +1213,41 @@ class ImageStack(object):
         if self.numberOfImages == 1:
             return imageList[0]
 
-        # If no offsets were supplied, then retrieve them
-        dx, dy = self.get_cross_correlation_offsets(subPixel=subPixel,
-            satLimit=satLimit)
+        # Check if approximate alignment has already been achieved
+        if not self.aligned:
+            # Start by retrieving the integer pixel offsets
+            print('Aligning images to the integer-pixel level')
+            dx, dy = self.get_cross_correlation_offsets(subPixel=False,
+                satLimit=satLimit)
 
+            # Align the images to an integer pixel level.
+            self.apply_image_shift_offsets(dx, dy, padding=padding)
+
+            # Set the alignment flag to True
+            self.__aligned = True
+
+        # If approximate alignment has already been achieved, then simply
+        # proceed to get sub-pixel alignment level.
         if subPixel == True:
+            # Get the sub-pixel corrections to the alignment.
+            print('Aligning images to the sub-pixel level')
+            dx, dy = self.get_cross_correlation_offsets(subPixel=True,
+                satLimit=satLimit)
+
             # Make sure there are no integers in the dx, dy list
             dx, dy = self._force_non_integer_offsets(dx, dy)
-        else:
-            # If non-subpixel alignment was requested, then FORCE all the
-            # offsets to the nearest integer value.
-            dx = np.round(dx).astype(int)
-            dy = np.round(dy).astype(int)
 
-        # Apply the shifts to the images in the stack
-        self.apply_image_shift_offsets(dx, dy, padding=padding)
+            # Apply the shifts to the images in the stack
+            self.apply_image_shift_offsets(dx, dy, padding=padding)
 
-        # Set the alignment flag to True
-        self.__aligned = True
+            # Set the alignment flag to True
+            self.__aligned = True
+
+        # else:
+        #     # If non-subpixel alignment was requested, then FORCE all the
+        #     # offsets to the nearest integer value.
+        #     dx = np.round(dx).astype(int)
+        #     dy = np.round(dy).astype(int)
 
         # Set the is_supersky flag to False (in case it was previously set True)
         self.__is_supersky = False
@@ -1468,9 +1639,10 @@ class ImageStack(object):
         if numWithUncert > 0 and numWithUncert < nz:
             # Issue a warning so that the user knows this is happening.
             warnings.warn(
-"""Not all images in the ImageStack have associated uncertainties:
-estimating uncertainty from data variance. This will overestimate
-the uncertainty in stellar pixels.""")
+                'Not all images in the ImageStack have associated '
+                'uncertainties: estimating uncertainty from data variance. '
+                'This will overestimate the uncertainty in stellar pixels.'
+            )
 
         if (numWithUncert != nz):
             outUncert = None
@@ -1725,6 +1897,25 @@ the uncertainty in stellar pixels.""")
         return dataSubStack
 
     @staticmethod
+    def _propagate_masked_uncertainty(uncertainty, mask):
+        """Computes the uncertainty in the masked array."""
+        # Compute the variance of the total quantity
+        varianceOfTheTotal = np.nansum(uncertainty**2, axis=0)
+
+        # Count the number of unmasked pixels in each column of the stack
+        goodPix = np.logical_and(
+            np.logical_not(mask),
+            np.isfinite(uncertainty)
+        )
+        numberOfUnmaskedPixels = np.sum(goodPix.astype(np.int16), axis=0)
+
+        # Estimate the uncertainty by dividing the variance by the number of
+        # unmasked pixels in each column, and then taking the square root.
+        maskedUncertainty = np.sqrt(varianceOfTheTotal)/numberOfUnmaskedPixels
+
+        return maskedUncertainty
+
+    @staticmethod
     def _compute_masked_mean_and_uncertainty(maskedData, uncertainty):
         """
         Computes the mean and uncertainty in the mean of a masked array.
@@ -1746,23 +1937,6 @@ the uncertainty in stellar pixels.""")
                 )
 
         return maskedMean, maskedUncertainty
-
-    @staticmethod
-    def _propagate_masked_uncertainty(uncertainty, mask):
-        """
-        Computes the uncertainty in the masked array.
-        """
-        # Compute the variance of the total quantity
-        varianceOfTheTotal = (uncertainty**2).sum(axis=0)
-
-        # Count the number of unmasked pixels in each column of the stack
-        numberOfUnmaskedPixels = np.sum(np.logical_not(mask).astype(np.int8), axis=0)
-
-        # Estimate the uncertainty by dividing the variance by the number of
-        # unmasked pixels in each column, and then taking the square root.
-        maskedUncertainty = np.sqrt(varianceOfTheTotal/numberOfUnmaskedPixels)
-
-        return maskedUncertainty
 
     def _compute_stack_mean_and_uncertainty(self,  starMask, iters=5,
         backgroundClipSigma=5.0, starClipSigma=40.0):
