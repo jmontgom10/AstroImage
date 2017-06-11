@@ -883,8 +883,13 @@ class ReducedScience(ResizingMixin, NumericsMixin, ReducedImage):
             # Cut out the star patch and get its properties
             starCutout = self.data[btCut:tpCut, lfCut:rtCut].copy()
 
-            # Fit a plane to the corner samples
+            # Grab the set of points to which to fit a plane
             xyzPts = np.array(xyPts + (starCutout[xyPts],))
+
+            # Skip this one if there are some non-finite values
+            if np.sum(np.logical_not(np.isfinite(xyzPts))) > 0: continue
+
+            # Fit a plane to the corner samples
             point, normalVec = planeFit(xyzPts)
 
             # Compute the value of the fited plane background

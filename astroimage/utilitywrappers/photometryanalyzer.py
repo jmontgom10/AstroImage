@@ -115,7 +115,7 @@ class PhotometryAnalyzer(object):
             xStars, yStars = xStars[0:50], yStars[0:50]
 
         # Grab the list of star cutouts
-        starCutouts = self.extract_star_cutouts(xStars, yStars, cutoutSize=cutoutSize)
+        starCutouts = self.image.extract_star_cutouts(xStars, yStars, cutoutSize=cutoutSize)
 
         # Loop through each cutout and grab its data properties
         sxList = []
@@ -145,14 +145,16 @@ class PhotometryAnalyzer(object):
             return outStamp, outDict
             # raise IndexError('There are no well behaving stars')
 
+        # Convert the starCutouts into an array for easy indexing
+        starCutoutArray = np.array(starCutouts)
+
         # If some of the patches are bad, then cut those out of the patch list
         if np.sum(badSXSY) > 0:
-            goodInds    = (np.where(goodSXSY))[0]
-            starCutouts = starCutouts[goodInds, :, :]
+            goodInds        = (np.where(goodSXSY))[0]
+            starCutoutArray = starCutoutArray[goodInds]
 
         # Compute an "median patch"
-        starCutoutArray = np.array(starCutouts)
-        medianPSF       = np.median(starCutoutArray, axis=0)
+        medianPSF = np.median(starCutoutArray, axis=0)
 
         # Build a gaussian + 2Dpolynomial (1st degree) model to fit median patch
         # Build a gaussian model for fitting stars
