@@ -216,7 +216,6 @@ class ResizingMixin(object):
         # Now treat the WCS for images which have astrometry.
         # Recompute the CRPIX and place them in the header
         CRPIX1, CRPIX2 = self.wcs.wcs.crpix/dxdy
-
         outImg.header['CRPIX1'] = CRPIX1
         outImg.header['CRPIX2'] = CRPIX2
 
@@ -451,7 +450,7 @@ class ResizingMixin(object):
         outImg._BaseImage__fullData = rebinFullData
 
         # Update the header values
-        outHead = self.header.copy()
+        outHead = outImg.header.copy()
         outHead['NAXIS1'] = nx
         outHead['NAXIS2'] = ny
 

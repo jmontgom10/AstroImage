@@ -1520,6 +1520,30 @@ class ReducedScience(ResizingMixin, NumericsMixin, ReducedImage):
             wcs=None
         )
 
+    def clear_sip_keys(self):
+        """Delete the Simple Image Polynomial (SIP) keys from header"""
+
+        # Define a FULL list of things to delete from the header
+        wcsKeywords = [
+            'A_1_1',  'A_0_2', 'A_2_0', 'A_ORDER',
+            'AP_0_1', 'AP_1_0', 'AP_1_1', 'AP_0_2', 'AP_2_0', 'AP_ORDER',
+            'B_1_1', 'B_0_2', 'B_2_0', 'B_ORDER',
+            'BP_1_0', 'BP_1_1', 'BP_0_1', 'BP_0_2', 'BP_2_0', 'BP_ORDER'
+        ]
+
+        # Loop through and delete any present keywords
+        for key in wcsKeywords:
+            if key in self.header:
+                del self.header[key]
+
+        # Also force reset any stored WCS object from the __fullData attribute
+        self._BaseImage__fullData = NDDataArray(
+            self.data,
+            uncertainty=StdDevUncertainty(self.uncertainty),
+            unit=self.unit,
+            wcs=WCS(self.header)
+        )
+
     def astrometry_to_header(self, wcs):
         """
         Places the astrometric information from a WCS object into the header.

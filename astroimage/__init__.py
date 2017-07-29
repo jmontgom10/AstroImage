@@ -5,9 +5,11 @@ subpackage.
 
 Modules
 -------
-raw
+instrument         Contains a simple class for storing instrument properties
 
-reduced
+raw                Contains all the classes used for handling raw telescope data
+
+reduced            Contains all the classes used for handling reduced data
 
 Subpackages
 --------
@@ -23,3 +25,34 @@ utilitywrappers    Contains several wrapper classes which take image objects as
 from . import raw
 from . import reduced
 from . import utilitywrappers
+
+def set_instrument(instrument):
+    """
+    Provides a convenient way to set the instrument for the image classes.
+
+    Parameters
+    ----------
+    instrument : dicts or str
+        Defines the header keyword relationship to be used. Permissible string
+        values for now are `PRISM` or `Mimir` (case insensitive).
+    """
+    presetInstruments = ['prism', 'mimir']
+
+    if type(instrument) is str:
+        if instrument.lower() == 'prism':
+            from .instruments import PRISM_headerDict
+            thisInstrument = PRISM_headerDict
+        elif instrument.lower() == 'mimir':
+            from .instruments import Mimir_headerDict
+            thisInstrument = Mimir_headerDict
+        else:
+            raise ValueError('`instrument` string of {} not recognized'.format(instrument))
+    elif type(instrument) is dict:
+        thisInstrument = instrument
+    else:
+        raise ValueError('`instrument` must be an dictionary or a string')
+
+    # Now set the instrument for the BaseImage class (which will be inherited
+    # but all other subclasses)
+    from .baseimage import BaseImage
+    BaseImage.set_headerKeywordDict(thisInstrument)

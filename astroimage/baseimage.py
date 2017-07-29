@@ -93,25 +93,6 @@ class BaseImage(object):
     #
     # and it would work!!! Then I dcan stop pre-treating "CRDELT*" keywords
     # every time I handle astrometry.
-    __headerKeywordDict = {
-        'AIRMASS': 'AIRMASS',
-        # 'BINNING': ('CRDELT1', 'CRDELT2'),
-        'BINNING': ('ADELX_01', 'ADELY_01'),
-        'INSTRUMENT': 'INSTRUME',
-        'FILTER': 'FILTNME3',
-        'PRESCANWIDTH': 'PRESCAN',
-        'OVERSCANWIDTH': 'POSTSCAN',
-        'RA': 'TELRA',
-        'DEC': 'TELDEC',
-        # TODO: Eventually find a way to include this?
-        # 'FRAME': 'RADESYS',
-        'EXPTIME': 'EXPTIME',
-        'DATETIME': 'DATE-OBS',
-        'OBSTYPE': 'OBSTYPE',
-        'UNIT': 'BUNIT',
-        'SCALEFACTOR': 'BSCALE',
-        'GAIN': 'AGAIN_01'
-    }
 
     # Store a list of acceptable properties for this class
     __properties =[
@@ -236,7 +217,15 @@ class BaseImage(object):
     @classmethod
     def headerKeywordDict(cls):
         """The translation dictionary from header keywords to image properties"""
-        return cls.baseClass.__headerKeywordDict
+        try:
+            return cls.baseClass._BaseImage__headerKeywordDict
+        except:
+            raise AttributeError("""
+The BaseImage `headerKeywordDict` has not been properly set.
+be sure to run the astroimage.set_instrument() function using
+a properly defined header keyword dictionary or a preset
+instrument (e.g., `prism` or `mimir`).
+""")
 
     @classmethod
     def set_headerKeywordDict(cls, translation):
@@ -288,7 +277,7 @@ class BaseImage(object):
         1.43
         """
         # Check if a dictionary was provided
-        if issubclass(type(translation), dict):
+        if not issubclass(type(translation), dict):
             raise TypeError("`translation` must be a dictionary")
 
         # Initalize a new dictionary to store upper cased keys and values
@@ -307,6 +296,32 @@ class BaseImage(object):
 
         # Grab the baseclass and store the dictionary as a class variable
         cls.baseClass._BaseImage__headerKeywordDict = reformattedTranslation
+
+    @staticmethod
+    def _header_handler(header):
+        """Modifies header in a way to be specified by the user"""
+        # By default, do not modify the header at all.
+        return header
+
+    @staticmethod
+    def set_header_handler(handlerFunction):
+        """
+        Sets the `_header_handler` helper method for the class
+
+        The `handlerFunction` will be applied to input headers as part of the
+        __init__ method. The purpose of this is to provide the user with a means
+        of making some minor changes to image headers as they are read in. For
+        example, if the image binning were stored in the `CDELT1` and `CDELT2`
+        keywords, those values can be moved elsewhere for safekeeping.
+
+        Parameters
+        ----------
+        handlerFunction : function
+            The handlerFunction must be a predefined function which takes an
+            astropy.io.fits.header.Header object as its only argument, Modifies
+            that header in some way, and then returns the modified header.
+        """
+        BaseImage._header_handler = staticmethod(handlerFunction)
 
     @ClassProperty
     @classmethod

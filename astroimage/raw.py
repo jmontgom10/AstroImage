@@ -124,35 +124,6 @@ class RawImage(BaseImage):
     def properties(cls):
         return cls.__properties
 
-    @staticmethod
-    def _header_handler(header):
-        """Modifies header in a way to be specified by the user"""
-        # By default, do not modify the header at all.
-        return header
-
-    # TODO: Make sure that the header_handler ONLY handles raw images and NOT
-    # reduced images (as those SHOULD already have the header handled (from
-    # when the parent raw images were handled))
-    @staticmethod
-    def set_header_handler(handlerFunction):
-        """
-        Sets the `_header_handler` helper method for the class
-
-        The `handlerFunction` will be applied to input headers as part of the
-        __init__ method. The purpose of this is to provide the user with a means
-        of making some minor changes to image headers as they are read in. For
-        example, if the image binning were stored in the `CDELT1` and `CDELT2`
-        keywords, those values can be moved elsewhere for safekeeping.
-
-        Parameters
-        ----------
-        handlerFunction : function
-            The handlerFunction must be a predefined function which takes an
-            astropy.io.fits.header.Header object as its only argument, Modifies
-            that header in some way, and then returns the modified header.
-        """
-        RawImage._header_handler = staticmethod(handlerFunction)
-
     ##################################
     ### END OF CLASS METHODS       ###
     ##################################
