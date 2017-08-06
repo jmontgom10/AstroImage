@@ -718,7 +718,8 @@ class ImageStack(object):
         self.__is_supersky = False
 
         # Force all the image shapes to be the same
-        self.pad_images_to_match_shapes()
+        if self.numberOfImages > 1:
+            self.pad_images_to_match_shapes()
 
     ##################################
     ### START OF PROPERTIES        ###
@@ -1356,7 +1357,10 @@ class ImageStack(object):
             starMask1 = ndimage.binary_closing(starMask1)
 
             # Clean out some edge effects.
-            starMask1[:, -4:-1] = 0
+            starMask1[0:6,   :] = 0
+            starMask1[-6:-1, :] = 0
+            starMask1[:, 0:6  ] = 0
+            starMask1[:, -6:-1] = 0
 
             #
             # NOTE: This doesn't work when there are nebulae and galaxies in the image!

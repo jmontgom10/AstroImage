@@ -34,7 +34,7 @@ from astropy.nddata import NDDataArray, StdDevUncertainty
 from astropy.wcs import WCS
 from astropy import units as u
 from astropy.coordinates import SkyCoord
-from astropy.stats import sigma_clipped_stats
+from astropy.stats import sigma_clipped_stats, freedman_bin_width
 from astropy.visualization import (ImageNormalize,  # Import the ImageNormalize
     ManualInterval, MinMaxInterval,                 # Import intervals
     ZScaleInterval, AsymmetricPercentileInterval,
@@ -891,7 +891,8 @@ instrument (e.g., `prism` or `mimir`).
         modeRegion = quickModeEst + std*np.array([-1.5, +1.5])
 
         # Now compute the number of bins to generate in this range
-        numBins = np.int(np.ceil(0.1*(np.max(modeRegion) - np.min(modeRegion))))
+        binWidth = freedman_bin_width(self.data.flatten())
+        bins     = np.arange(modeRegion[0], modeRegion[1], binWidth)
 
         # Loop through larger and larger binning until find unique solution
         foundMode = False

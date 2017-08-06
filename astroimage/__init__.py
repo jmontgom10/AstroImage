@@ -45,6 +45,11 @@ def set_instrument(instrument):
         elif instrument.lower() == 'mimir':
             from .instruments import Mimir_headerDict
             thisInstrument = Mimir_headerDict
+        elif instrument.lower() == '2mass':
+            from .instruments import TMASS_headerDict
+            thisInstrument = TMASS_headerDict
+        elif instrument.lower() == 'none':
+            thisInstrument = {}
         else:
             raise ValueError('`instrument` string of {} not recognized'.format(instrument))
     elif type(instrument) is dict:

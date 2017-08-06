@@ -69,7 +69,7 @@ class Inpainter(object):
         outArray = array.copy()
 
         # Place a NaN in all the bad pixels to make them easier to find
-        array[badInds] = np.NaN
+        outArray[badInds] = np.NaN
 
         return outArray, proceed
 

@@ -42,3 +42,11 @@ Mimir_headerDict = {
     'UNIT': 'BUNIT',
     'SCALEFACTOR': 'BSCALE'
 }
+
+TMASS_headerDict = {
+    'FILTER': 'BAND',
+    # 'RA': 'CRVAL1',
+    # 'DEC': 'CRVAL2',
+    # TODO: Eventually find a way to include this?
+    # 'FRAME': 'RADESYS',
+}
