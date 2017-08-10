@@ -316,8 +316,8 @@ class ImagePairOffsetGetter(object):
 
         # Find the cutouts with good correlation coefficients
         goodCorrelationCoeffs = np.logical_and(
-            np.abs(cutoutCorrelationCoeffs1 - np.median(cutoutCorrelationCoeffs1)) < 0.1,
-            np.abs(cutoutCorrelationCoeffs2 - np.median(cutoutCorrelationCoeffs2)) < 0.1
+            np.abs(cutoutCorrelationCoeffs1 - np.nanmedian(cutoutCorrelationCoeffs1)) < 0.15,
+            np.abs(cutoutCorrelationCoeffs2 - np.nanmedian(cutoutCorrelationCoeffs2)) < 0.15
         )
 
         # Find the cutouts with good elogation values
@@ -562,7 +562,6 @@ class ImagePairOffsetGetter(object):
             starCutouts1,
             starCutouts2
         )
-
 
         # Build the square mosaics of cutouts
         cutoutMosaic1 = self._build_star_cutout_mosaic(starCutouts1)
