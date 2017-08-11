@@ -514,9 +514,12 @@ class StokesParameters(object):
 
         # Remove any 'POLPOS' data from the header
         # TODO: generalize this to permit other keywords such as 'HWPpos', etc..
-        tmpHeader = stokesI.header
-        del tmpHeader['POLPOS']
-        stokesI.header = tmpHeader
+        try:
+            tmpHeader = stokesI.header
+            del tmpHeader['POLPOS']
+            stokesI.header = tmpHeader
+        except:
+            pass
 
         # Resolve the astrometric solution if that was requested.
         if resolveAstrometry:
