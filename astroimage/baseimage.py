@@ -1371,6 +1371,22 @@ instrument (e.g., `prism` or `mimir`).
         description : str
             A string description of the BaseImage instance
         """
+        # Temporary fix: keep for now, until I guarantee the fix at the
+        # "__cenCoord" assignment works.
+        # 
+        # # Processs the RA and Dec strings
+        # RAstr  = self.ra.to_string(u.h)
+        # if not issubclass(type(RAstr), str):
+        #     try:
+        #         RAstr = RAstr[0]
+        #     except:
+        #         RAstr = str(RAstr)
+        # DecStr = self.dec.to_string(u.deg)
+        # if not issubclass(type(DecStr), str):
+        #     try:
+        #         DecStr = DecStr[0]
+        #     except:
+        #         DecStr = str(DecStr)
 
         # Build the description string from the instance properties
         description = '\nSUMMARY FOR     ' + os.path.basename(str(self.filename)) + '\n' + \
@@ -1525,6 +1541,10 @@ instrument (e.g., `prism` or `mimir`).
             except:
                 raise
 
+            # Double check that coord is a scalar
+            if hasattr(coord, "__iter__"): coord = coord[0]
+
+            # Save the coordinate
             self.__centerCoord = coord
         else:
             self.__centerCoord  = SkyCoord(0, 0, unit=u.deg)
@@ -1782,7 +1802,7 @@ instrument (e.g., `prism` or `mimir`).
         outData = self.data.astype(dtype1)
 
         # Build the converted output uncertainty
-        if self._BaseImage__fullData.uncertainty is not None:
+        if self.has_uncertainty:
             outUncert = self._BaseImage__fullData.uncertainty.array.astype(dtype1)
             outUncert = StdDevUncertainty(outUncert)
         else:
