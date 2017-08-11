@@ -442,6 +442,77 @@ class StokesParameters(object):
 
         return outStokes
 
+    def __getitem__(self, key):
+        """
+        Implements the slice getting method for all the contained images.
+
+        Parameters
+        ----------
+        key: slice
+            The start, stop[, step] slice of the pixel locations to be returned
+
+        Returns
+        -------
+        outImg: `StokesParameters`
+            A sliced copy of the original StokesParameters object
+
+        Examples
+        --------
+        """
+        # Convert a singular slice into a tuple of slices
+        if isinstance(key, slice):
+            key1 = (key,)
+        else:
+            if len(key) > len(self.shape):
+                raise IndexError('Too many indices for 2D image')
+            key1 = key
+
+        # Get the starting point of the slices
+        startPix = [k.start if k.start is not None else 0
+            for k in key]
+
+        # Get the stopping point of the slices
+        stopPix = [k.stop if k.stop is not None else nPix
+            for k, nPix in zip(key, self.shape)]
+
+        # Compute the rebinning factors along each axis
+        stepPix = [k.step if k.step is not None else 1
+            for k in key]
+
+        # Test if all the slice values are integers before proceeding
+        intClasses = (int, np.int8, np.int16, np.int32, np.int64)
+        startsAreInts = all([isinstance(start, intClasses) for start in startPix])
+        stopsAreInts  = all([isinstance(stop, intClasses) for stop in stopPix])
+        stepsAreInts  = all([isinstance(step, intClasses) for step in stepPix])
+        if not (startsAreInts and stopsAreInts and stepsAreInts):
+            raise ValueError('All start, stop[, step] values must be integers')
+
+        # Get the proposed shape based on the provided slices
+        cropShape = [(stop - start)
+            for start, stop in zip(startPix, stopPix)]
+
+        # Compute the number of remainder pixels along each axis at this binning
+        remainderPix = [nPix % binning
+            for nPix, binning in zip(cropShape, stepPix)]
+
+        # Recompute the crop boundaries using the rebinning factors
+        cropShape = [propPix - remainPix
+            for propPix, remainPix in zip(cropShape, remainderPix)]
+
+        # Recompute the stopping point
+        stopPix = [start + length
+            for start, length in zip(startPix, cropShape)]
+
+        # Crop the images contained in this instance
+        outSokes = self.crop(startPix, stopPix)
+
+        # Rebin the images if necessary
+        if any([b > 1 for b in stepPix]):
+            rebinShape = tuple([cs//sp for cs, sp in zip(cropShape, stepPix)])
+            outStokes = outStokes.rebin(rebinShape)
+
+        return outStokes
+
     ##################################
     ### END OF IMAGE METHODS       ###
     ##################################
