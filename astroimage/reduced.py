@@ -176,7 +176,17 @@ class ReducedImage(BaseImage):
     @property
     def has_uncertainty(self):
         """Boolean flag if the `uncertainty` property exists"""
-        return (self._BaseImage__fullData.uncertainty is not None)
+        hasUncert = False
+        try:
+            hasUncert = self._BaseImage__fullData.uncertainty is not None
+        except:
+            pass
+        try:
+            hasUncert = self._BaseImage__fullData.uncertainty.array is not None
+        except:
+            pass
+
+        return hasUncert
 
     @property
     def uncertainty(self):
@@ -890,6 +900,7 @@ class ReducedScience(ResizingMixin, NumericsMixin, ReducedImage):
             if np.sum(np.logical_not(np.isfinite(xyzPts))) > 0: continue
 
             # Fit a plane to the corner samples
+            # TODO: double check that this plan-fit procedure is working properly
             point, normalVec = planeFit(xyzPts)
 
             # Compute the value of the fited plane background
