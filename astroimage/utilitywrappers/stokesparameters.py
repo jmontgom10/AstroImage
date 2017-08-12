@@ -328,6 +328,10 @@ class StokesParameters(object):
     def V(self):
         return self._StokesParameters__stokesImages['V']
 
+    @property
+    def shape(self):
+        return self._StokesParameters__stokesImages['I'].shape
+
     ##################################
     ### END OF PROPERTIES          ###
     ##################################
