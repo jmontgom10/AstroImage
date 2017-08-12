@@ -340,7 +340,7 @@ class StokesParameters(object):
     ### START OF IMAGE METHODS     ###
     ##################################
 
-    def crop(self, x1, x2, y1, y2):
+    def crop(self, lowPix, highPix):
         # TODO use the self.wcs.wcs.sub() method to recompute the right wcs
         # for a cropped image.
         """
@@ -348,9 +348,11 @@ class StokesParameters(object):
 
         Parameters
         ----------
-        x1, x2, y1, y2: int
-            The pixel locations for the edges of the cropped IPPA and Stokes
-            images.
+        lowPix : tuple
+            The starting point of the crop along each axis.
+
+        highPix : tuple
+            The stopping point of the crop along each axis.
 
         Returns
         -------
@@ -363,10 +365,10 @@ class StokesParameters(object):
         # Attempt to apply the rebinning to each image
         try:
             if self._StokesParameters__ippaImages is not None:
-                rebinnedI_0 = self._StokesParameters__ippaImages['I_0'].crop(x1, x2, y1, y2)
-                rebinnedI_45 = self._StokesParameters__ippaImages['I_45'].crop(x1, x2, y1, y2)
-                rebinnedI_90 = self._StokesParameters__ippaImages['I_90'].crop(x1, x2, y1, y2)
-                rebinnedI_135 = self._StokesParameters__ippaImages['I_135'].crop(x1, x2, y1, y2)
+                rebinnedI_0 = self._StokesParameters__ippaImages['I_0'].crop(lowPix, highPix)
+                rebinnedI_45 = self._StokesParameters__ippaImages['I_45'].crop(lowPix, highPix)
+                rebinnedI_90 = self._StokesParameters__ippaImages['I_90'].crop(lowPix, highPix)
+                rebinnedI_135 = self._StokesParameters__ippaImages['I_135'].crop(lowPix, highPix)
 
                 # Construct the IPPA image dictionary
                 keyList  = ['I_0', 'I_45', 'I_90', 'I_135']
@@ -377,9 +379,9 @@ class StokesParameters(object):
                 outStokes._StokesParameters__ippaImages   = ippaDict
 
 
-            rebinnedI = self._StokesParameters__stokesImages['I'].crop(x1, x2, y1, y2)
-            rebinnedQ = self._StokesParameters__stokesImages['Q'].crop(x1, x2, y1, y2)
-            rebinnedU = self._StokesParameters__stokesImages['U'].crop(x1, x2, y1, y2)
+            rebinnedI = self._StokesParameters__stokesImages['I'].crop(lowPix, highPix)
+            rebinnedQ = self._StokesParameters__stokesImages['Q'].crop(lowPix, highPix)
+            rebinnedU = self._StokesParameters__stokesImages['U'].crop(lowPix, highPix)
 
             # Construct the Stokes parameters image dictionary
             keyList    = ['I', 'Q', 'U', 'V']
@@ -394,15 +396,16 @@ class StokesParameters(object):
 
         return outStokes
 
-    def rebin(self, nx, ny):
+    def rebin(self, outShape):
         """
         Rebins the images in this instance to have a specified shape.
 
         Parameters
         ----------
-        nx, ny: int
-            The target number of pixels along the horizontal (nx) and vertical
-            (ny) axes for the IPPA and Stokes images.
+        outShape : tuple of ints
+            The new shape for the rebinned image. This must be an integer factor
+            of the shape of the original image, although the integer factor does
+            not need to be the same along each axis.
 
         Returns
         -------
@@ -415,10 +418,10 @@ class StokesParameters(object):
         # Attempt to apply the rebinning to each image
         try:
             if self._StokesParameters__ippaImages is not None:
-                rebinnedI_0 = self._StokesParameters__ippaImages['I_0'].rebin(nx, ny)
-                rebinnedI_45 = self._StokesParameters__ippaImages['I_45'].rebin(nx, ny)
-                rebinnedI_90 = self._StokesParameters__ippaImages['I_90'].rebin(nx, ny)
-                rebinnedI_135 = self._StokesParameters__ippaImages['I_135'].rebin(nx, ny)
+                rebinnedI_0 = self._StokesParameters__ippaImages['I_0'].rebin(outShape)
+                rebinnedI_45 = self._StokesParameters__ippaImages['I_45'].rebin(outShape)
+                rebinnedI_90 = self._StokesParameters__ippaImages['I_90'].rebin(outShape)
+                rebinnedI_135 = self._StokesParameters__ippaImages['I_135'].rebin(outShape)
 
                 # Construct the IPPA image dictionary
                 keyList  = ['I_0', 'I_45', 'I_90', 'I_135']
@@ -429,9 +432,9 @@ class StokesParameters(object):
                 outStokes._StokesParameters__ippaImages   = ippaDict
 
 
-            rebinnedI = self._StokesParameters__stokesImages['I'].rebin(nx, ny)
-            rebinnedQ = self._StokesParameters__stokesImages['Q'].rebin(nx, ny)
-            rebinnedU = self._StokesParameters__stokesImages['U'].rebin(nx, ny)
+            rebinnedI = self._StokesParameters__stokesImages['I'].rebin(outShape)
+            rebinnedQ = self._StokesParameters__stokesImages['Q'].rebin(outShape)
+            rebinnedU = self._StokesParameters__stokesImages['U'].rebin(outShape)
 
             # Construct the Stokes parameters image dictionary
             keyList    = ['I', 'Q', 'U', 'V']
