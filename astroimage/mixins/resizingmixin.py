@@ -716,7 +716,9 @@ class ResizingMixin(object):
         intClasses = (int, np.int8, np.int16, np.int32, np.int64)
         startsAreInts = all([isinstance(start, intClasses) for start in startPix])
         stopsAreInts  = all([isinstance(stop, intClasses) for stop in stopPix])
-        stepsAreInts  = all([isinstance(step, intClasses) for step in stepPix])
+        stepsAreInts  = all([np.float(step).is_integer() for step in stepPix])
+        stepsAreInts  = (stepsAreInts or
+            all([(1.0/np.float(step)).is_integer() for step in stepPix]))
         if not (startsAreInts and stopsAreInts and stepsAreInts):
             raise ValueError('All start, stop[, step] values must be integers')
 
@@ -725,7 +727,7 @@ class ResizingMixin(object):
             for start, stop in zip(startPix, stopPix)]
 
         # Compute the number of remainder pixels along each axis at this binning
-        remainderPix = [nPix % binning
+        remainderPix = [np.int(nPix % binning)
             for nPix, binning in zip(cropShape, stepPix)]
 
         # Recompute the crop boundaries using the rebinning factors
@@ -740,9 +742,11 @@ class ResizingMixin(object):
         outImg = self.crop(startPix, stopPix)
 
         # Rebin the arrays if necessary
-        if any([b > 1 for b in stepPix]):
-            rebinShape = tuple([cs//sp for cs, sp in zip(cropShape, stepPix)])
-            outImg = outImg.rebin(rebinShape)
+        if any([b != 1 for b in stepPix]):
+            rebinShape = tuple([
+                np.int(cs/sp) for cs, sp in zip(cropShape, stepPix)
+            ])
+            outImg     = outImg.rebin(rebinShape)
 
         return outImg
 

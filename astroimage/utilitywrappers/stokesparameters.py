@@ -490,6 +490,8 @@ class StokesParameters(object):
         startsAreInts = all([np.float(start).is_integer() for start in startPix])
         stopsAreInts  = all([np.float(stop).is_integer() for stop in stopPix])
         stepsAreInts  = all([np.float(step).is_integer() for step in stepPix])
+        stepsAreInts  = (stepsAreInts or
+            all([(1.0/np.float(step)).is_integer() for step in stepPix]))
         if not (startsAreInts and stopsAreInts and stepsAreInts):
             raise ValueError('All start, stop[, step] values must be integers')
 
@@ -498,7 +500,7 @@ class StokesParameters(object):
             for start, stop in zip(startPix, stopPix)]
 
         # Compute the number of remainder pixels along each axis at this binning
-        remainderPix = [nPix % binning
+        remainderPix = [np.int(nPix % binning)
             for nPix, binning in zip(cropShape, stepPix)]
 
         # Recompute the crop boundaries using the rebinning factors
@@ -513,9 +515,11 @@ class StokesParameters(object):
         outStokes = self.crop(startPix, stopPix)
 
         # Rebin the images if necessary
-        if any([b > 1 for b in stepPix]):
-            rebinShape = tuple([cs//sp for cs, sp in zip(cropShape, stepPix)])
-            outStokes = outStokes.rebin(rebinShape)
+        if any([b != 1 for b in stepPix]):
+            rebinShape = tuple([
+                np.int(cs/sp) for cs, sp in zip(cropShape, stepPix)
+            ])
+            outStokes  = outStokes.rebin(rebinShape)
 
         return outStokes
 
