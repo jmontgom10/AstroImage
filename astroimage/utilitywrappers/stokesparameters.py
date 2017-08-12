@@ -487,10 +487,9 @@ class StokesParameters(object):
             for k in key]
 
         # Test if all the slice values are integers before proceeding
-        intClasses = (int, np.int8, np.int16, np.int32, np.int64)
-        startsAreInts = all([isinstance(start, intClasses) for start in startPix])
-        stopsAreInts  = all([isinstance(stop, intClasses) for stop in stopPix])
-        stepsAreInts  = all([isinstance(step, intClasses) for step in stepPix])
+        startsAreInts = all([np.float(start).is_integer() for start in startPix])
+        stopsAreInts  = all([np.float(stop).is_integer() for stop in stopPix])
+        stepsAreInts  = all([np.float(step).is_integer() for step in stepPix])
         if not (startsAreInts and stopsAreInts and stepsAreInts):
             raise ValueError('All start, stop[, step] values must be integers')
 
