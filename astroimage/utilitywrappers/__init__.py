@@ -4,6 +4,10 @@ in the AstroImage package.
 
 Classes
 -------
+AdaptiveMesher        Performs a kind of adaptive mesh refinement (AMR) using
+                      a user-defined statistic to determine which cells should
+                      be further rebinned.
+
 AstrometrySolver      Provides an interface with the Astrometry.net engine to
                       solve the astrometry of the image.
                       (Astrometry.net must must be separately installed by the
