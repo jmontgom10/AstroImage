@@ -508,7 +508,7 @@ class StokesParameters(object):
             for start, length in zip(startPix, cropShape)]
 
         # Crop the images contained in this instance
-        outSokes = self.crop(startPix, stopPix)
+        outStokes = self.crop(startPix, stopPix)
 
         # Rebin the images if necessary
         if any([b > 1 for b in stepPix]):
