@@ -30,6 +30,7 @@ StokesParameters      Provides tools for computing Stokes parameter images from
 
 # Make the primary class from each module accessible directly from the
 # utilitywrappers subpackage.
+from .adaptivemesher import AdaptiveMesher
 from .astrometrysolver import AstrometrySolver
 from .imagestack import ImageStack
 from .inpainter import Inpainter
