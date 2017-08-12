@@ -1373,7 +1373,7 @@ instrument (e.g., `prism` or `mimir`).
         """
         # Temporary fix: keep for now, until I guarantee the fix at the
         # "__cenCoord" assignment works.
-        # 
+        #
         # # Processs the RA and Dec strings
         # RAstr  = self.ra.to_string(u.h)
         # if not issubclass(type(RAstr), str):
@@ -1542,7 +1542,11 @@ instrument (e.g., `prism` or `mimir`).
                 raise
 
             # Double check that coord is a scalar
-            if hasattr(coord, "__iter__"): coord = coord[0]
+            if hasattr(coord, "__len__"):
+                try:
+                    coord = coord[0]
+                except:
+                    pass
 
             # Save the coordinate
             self.__centerCoord = coord
