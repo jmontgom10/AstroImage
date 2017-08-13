@@ -684,7 +684,7 @@ class StokesParameters(object):
         # Test if Q and U have similar rotation angle
         if np.abs(Qrot - Urot) < (0.4*u.deg):
             # Add rotation angle to final deltaPA
-            final_D_PA = self.D_PA + Qrot
+            final_D_PA = self.D_PA + 0.5*(Qrot + Urot)
         else:
             raise ValueError('The astrometry in U and Q do not seem to match.')
 
