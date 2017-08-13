@@ -239,13 +239,25 @@ class AdaptiveMesher(object):
             # Assign the identified pixels to the *previous* binning level
             finalBinnings[np.where(assignPixels)] = rebin*2
 
+        # Locate pixels which do not ever pass the *maximal* binning
+        maximalBinningPass = self._test_refine_binning(testResults[forwardBinnings.max()])
+        maximalBinningPass = ReducedScience(maximalBinningPass.astype(int))
+        maximalBinningPass = maximalBinningPass.rebin(unbinnedShape)
+
+        # Find pixels assigned to the maximal binning but which do not pass the
+        # maximal binning test
+        totalFailurePix = np.logical_and(
+            finalBinnings == forwardBinnings.max(),
+            np.logical_not(maximalBinningPass.data)
+        )
+
+        # Assign those pixels which fail even at the maximal binning to actually
+        # have the finest binning (since no value was obtained with binning up
+        # pixels)
+        finalBinnings[np.where(totalFailurePix)] = 1
+
         # Store the final binings for the user to check out if they want
         self.amrBinnings = finalBinnings
-
-        # TODO: It might make sense here to do one more pass where any pixels
-        # assigned to the *maximal* level of rebinning but which still fail the
-        # statistic threshold test should be reassigned to 1x1 binning since the
-        # rebinning did not seem to provide any statistical advantage.
 
         # Copy the rebinned data over to the final output object
         adaptiveMeshedData = copy.deepcopy(self.croppedData)
