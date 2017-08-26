@@ -210,96 +210,27 @@ class PhotometryAnalyzer(object):
 
         return (medianPSF, PSFparams)
 
-    def aperture_photometry(self, xStars, yStars, starApr, skyAprIn, skyAprOut):
+    def locate_COG_stars(self, satLimit=16e3):
         """
-        Computes the aperture photometry for the specified locations
+        Finds the location of non-saturated stars good for building COG
 
-        Paramaters
+        Parameters
         ----------
-        xStars : array_like (length - numStars)
-            An array of star locations (in pixels) along the x-axis
-
-        yStars : array_like (length - numStars)
-            An array of star locations (in pixels) along the y-axis
-
-        starApr : scalar or array_like (length - numApr)
-            The size of the circular aperture (in pixels) within which to sum
-            up the star counts.
-
-        skyAprIn : int or float
-            The inner radius (in pixels) of the circular annulus within which to
-            sum up the sky counts.
-
-        skyAprOut : int or float
-            The outer radius (in pixels) of the cirucal annulus within which to
-            sum up the sky counts.
+        satLimit : int or float, optional, default: 16e3
+            Sources which contain any pixels with more than this number of
+            counts will be discarded from the returned list of sources on
+            account of being saturated.
 
         Returns
         -------
-        instrumentalMagnitudes : numpy.ndarray (shape - (numStars, numApr))
-            Instrumental magnitudes computed using the supplied parameters
+        xCOGstars, yCOGstars : array_like (length - numCOGstars)
+            An array of locations (in pixels) along the x- and y-axes of
+            bright stars appropriate for determining the curve-of-growth
         """
-        multipleApr = hasattr(starApr, '__iter__')
-        if multipleApr:
-            # Construct the stellar apertures
-            starApertures = [CircularAperture((xStars, yStars), r=r) for r in starApr]
-        else:
-            # Treat the starApr variable as a scalar
-            try:
-                starApr = float(starApr)
-                starApertures = CircularAperture((xStars, yStars), r=starApr)
-            except:
-                raise
-
-        # Compute the raw stellar photometry
-        starRawPhotTable = aperture_photometry(
-            self.image.data,
-            starApertures,
-            error=self.image.uncertainty,
-            pixelwise_error=True
-        )
-
-        # Construct the sky apertures
-        skyApertures = CircularAnnulus((xStars, yStars),
-            r_in=skyAprIn, r_out=skyAprOut)
-
-        # Compute the raw sky photometry
-        skyRawPhotTable = aperture_photometry(
-            self.image.data,
-            skyApertures,
-            error=self.image.uncertainty,
-            pixelwise_error=True
-        )
-
-        # Compute the mean packgroud value at each star
-        bkg_mean = skyRawPhotTable['aperture_sum'] / skyApertures.area()
-
-        # Subtract the average sky background and store the resultself
-        if multipleApr:
-            bkg_sum = [bkg_mean * sa.area() for sa in starApertures]
-            subtractedStarPhot = np.array([
-                starRawPhotTable['aperture_sum_{}'.format(i)] - bkg_sum[i]
-                for i in range(len(starApr))])
-
-            # Compute the uncertainty in the background subtracted photometry.
-            subtractedPhotUncert = np.array([
-                np.sqrt(
-                    starRawPhotTable['aperture_sum_err_{}'.format(i)]**2 +
-                    skyRawPhotTable['aperture_sum_err']**2
-                ) for i in range(len(starApr))
-            ])
-        else:
-            bkg_sum = bkg_mean * starApertures.area()
-            subtractedStarPhot = starRawPhotTable['aperture_sum'] - bkg_sum
-            subtractedPhotUncert = np.sqrt(
-                starRawPhotTable['aperture_sum_err']**2 +
-                skyRawPhotTable['aperture_sum_err']**2
-            )
-
-        return subtractedStarPhot, subtractedPhotUncert
+        pass
 
     @lru_cache()
-    def get_curve_of_growth(self, satLimit=16e3):
+    def get_curve_of_growth(self, xCOGstars, yCOGstars):
         """
         Computes the parameters for a King profile curve of growth.
 
@@ -321,11 +252,21 @@ class PhotometryAnalyzer(object):
         C  = Sets the fraction of contribution from the exponential function
         D  = The ratio of guassian and exponential widths (should be ~0.9)
 
+        Parameters
+        ----------
+        xCOGstars : array_like (length - numCOGstars)
+            An array of locations (in pixels) along the x-axis of bright
+            stars appropriate for determining the curve-of-growth
+
+        yCOGstars : array_like (length - numCOGstars)
+            An array of locations (in pixels) along the y-axis of bright
+            stars appropriate for determining the curve-of-growth
+
         Returns
         -------
-        parameterDict : dict
-            A dictionary containing the parameters for the best fit King profile
-            based on the bright stars in the image.
+        kingParams : dict
+            A dictionary containing the King Profile parameters which best
+            fit the observations
         """
         # Grab the star positions using the same default values as get_psf
         xStars, yStars = self.image.get_sources(
@@ -397,6 +338,141 @@ class PhotometryAnalyzer(object):
             sigma=y_uncertainty
         )
 
+
+    def aperture_photometry(self, xStars, yStars, starApr, skyAprIn, skyAprOut):
+        """
+        Computes the aperture photometry for the specified locations
+
+        Paramaters
+        ----------
+        xStars : array_like (length - numStars)
+            An array of star locations (in pixels) along the x-axis
+
+        yStars : array_like (length - numStars)
+            An array of star locations (in pixels) along the y-axis
+
+        starApr : scalar or array_like (length - numApr)
+            The size of the circular aperture (in pixels) within which to sum
+            up the star counts.
+
+        skyAprIn : int or float
+            The inner radius (in pixels) of the circular annulus within which to
+            sum up the sky counts.
+
+        skyAprOut : int or float
+            The outer radius (in pixels) of the cirucal annulus within which to
+            sum up the sky counts.
+
+        Returns
+        -------
+        instrumentalMagnitudes : numpy.ndarray (shape - (numStars, numApr))
+            Instrumental magnitudes computed using the supplied parameters
+        """
+        # Test if the supplied `starApr` is an array, then use an array of
+        # apertures. If the supplied `starApr` is a scalar, then use the same
+        # aperture for all the stars.
+        multipleApr = hasattr(starApr, '__iter__')
+        if multipleApr:
+            # Construct the stellar apertures
+            starApertures = [CircularAperture((xStars, yStars), r=r) for r in starApr]
+        else:
+            # Treat the starApr variable as a scalar
+            try:
+                starApr = float(starApr)
+                starApertures = CircularAperture((xStars, yStars), r=starApr)
+            except:
+                raise
+
+        # TODO: Check if uncertainty attribute exist, if not, then require gain
+
+        # Compute the raw stellar photometry
+        starRawPhotTable = aperture_photometry(
+            self.image.data,
+            starApertures,
+            error=self.image.uncertainty,
+            pixelwise_error=True
+        )
+
+        # Construct the sky apertures
+        skyApertures = CircularAnnulus((xStars, yStars),
+            r_in=skyAprIn, r_out=skyAprOut)
+
+        # Compute the raw sky photometry
+        skyRawPhotTable = aperture_photometry(
+            self.image.data,
+            skyApertures,
+            error=self.image.uncertainty,
+            pixelwise_error=True
+        )
+
+        # Compute the mean packgroud value at each star
+        bkg_mean = skyRawPhotTable['aperture_sum'] / skyApertures.area()
+
+        # Subtract the average sky background and store the resultself
+        if multipleApr:
+            bkg_sum = [bkg_mean * sa.area() for sa in starApertures]
+            subtractedStarPhot = np.array([
+                starRawPhotTable['aperture_sum_{}'.format(i)] - bkg_sum[i]
+                for i in range(len(starApr))])
+
+            # Compute the uncertainty in the background subtracted photometry.
+            subtractedPhotUncert = np.array([
+                np.sqrt(
+                    starRawPhotTable['aperture_sum_err_{}'.format(i)]**2 +
+                    skyRawPhotTable['aperture_sum_err']**2
+                ) for i in range(len(starApr))
+            ])
+        else:
+            bkg_sum = bkg_mean * starApertures.area()
+            subtractedStarPhot = starRawPhotTable['aperture_sum'] - bkg_sum
+            subtractedPhotUncert = np.sqrt(
+                starRawPhotTable['aperture_sum_err']**2 +
+                skyRawPhotTable['aperture_sum_err']**2
+            )
+
+        return subtractedStarPhot, subtractedPhotUncert
+
+    def locate_maximum_SNR_apertures(self, xStars, yStars):
+        """
+        Finds the aperture at which each stellar flux has a maximum SNR
+
+        Paramaters
+        ----------
+        xStars : array_like (length - numStars)
+            An array of star locations (in pixels) along the x-axis
+
+        yStars : array_like (length - numStars)
+            An array of star locations (in pixels) along the y-axis
+
+        Returns
+        -------
+        starApr : `numpy.array` (length - numStars)
+            The aperture radius (in pixels) at which the apeture flux
+            reaches a maximum signal-to-noise ratio (SNR).
+        """
+        pass
+
+    def apply_aperture_corrections(self, starApr, instrumentalMagnitudes, kingParams):
+        """
+        Corrects aperture photometry using the supplied King Profile
+
+        Estimates the fraction of light contained *outside* the apertures
+        used  to compute the supplied magnitudes.
+
+        Parameters
+        ----------
+        starApr : array_like ( length - numStars)
+            The aperture radius (in pixels) at which the apeture flux is a
+            maximum signal-to-noise ratio (SNR).
+
+        instrumentalMagnitudes : array_like (shape - (numStars, numApr))
+            Instrumental magnitudes computed using the supplied parameters
+
+        kingParams : dict
+            A dictionary containing the King Profile parameters which best
+            fit the observations
+        """
+        pass
 
     ##################################
     ### END OF ANALYZERS           ###
