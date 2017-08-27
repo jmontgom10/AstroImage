@@ -752,6 +752,7 @@ class ReducedScience(ResizingMixin, NumericsMixin, ReducedImage):
         # Grab the x, y positions of the sources and return as arrays
         xs, ys = sources['xcentroid'].data, sources['ycentroid'].data
 
+        # TODO: return semiminor and semimajor axes for each source???
         return xs, ys
 
     @lru_cache()
