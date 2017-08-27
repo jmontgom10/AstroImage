@@ -40,6 +40,128 @@ class PhotometryAnalyzer(object):
     Performs curve-of-growth and PSF analysis along with aperture photometry.
     """
 
+    ##################################
+    ### START OF STATIC METHODS    ###
+    ##################################
+
+    @staticmethod
+    def _king_profile(r, Ri, A, B, C, D):
+        """
+        Returns the King profile value for the provided parameters
+
+        See Stetson (PASP 102: 932-948, August 1990) for more information.
+
+        The King profile is given by
+
+        S(r; Ri,A,B,C,D) = (B*M(r; A) + (1-B)*(C*G(r; Ri) + (1-c)*H(r; D*Ri)))
+
+        where M, G, and H are Moffat, Gaussian, and exponential functions,
+        respectively.
+
+        M(r; A)   = (A-1)/pi * (1 + r**2)**(-A)
+        G(r; Ri)  = 1/(2*pi*(Ri**2)) * exp(-0.5*(r/Ri)**2)
+        H(r; D*Ri) = 1/(2*pi*(D*Ri)**2) * exp(-r/(D*Ri))
+
+        Parameters
+        ----------
+        r : float array_like or scalar
+            The radius (in pixels) at which to evaluate the King profile
+
+        Ri : float
+            The radial seeing parameter
+
+        A : float
+            The Moffat exponential parameter
+
+        B : float
+            The fraction of contribution from the Gaussian function
+
+        C : float
+            The fraction of contribution from the exponential function
+
+        D : float
+            The ratio of guassian and exponential widths (should be ~0.9)
+
+        Returns
+        -------
+        kingProfile : array_like or scalar
+            The value of the King profile at the specified radius using
+            the supplied parameters
+        """
+        # Generate the terms of the King profile
+        M = (A-1)/np.pi * (1 + r**2)**(-A)
+        G = 1/(2*np.pi*(Ri**2)) * np.exp(-0.5*(r/Ri)**2)
+        H = 1/(2*np.pi*(D*Ri)**2) * np.exp(-r/(D*Ri))
+
+        # Compute the king profile value
+        S = B*M + (1-B)*(C*G + (1-C)*H)
+
+        return S
+
+    @staticmethod
+    def _integrated_king_profile(r, Ri, A, B, C, D):
+        """
+        The King profile integrated out to the specified radius
+
+        For parameter description see `_king_profile`
+
+        Returns
+        -------
+        integratedKingProfile : array_like or scalar
+            The value of the King profile integrated from a radius of
+            zero out to the specified radius
+        """
+        # Generate each term of the integrated King profile
+        integratedM = 1.0 - (1+r**2)**(1-A)
+        integratedG = 1.0 - np.exp(-0.5*(r/Ri)**2)
+        integratedH = 1.0 - ((r + D*Ri)*np.exp(-r/(D*Ri)))/(D*Ri)
+
+        # Compute the total integrated value
+        integratedS = (
+            B*integratedM +
+            (1-B)*(
+                C*integratedG +
+                (1-C)*integratedH
+            )
+        )
+
+        return integratedS
+
+    @staticmethod
+    def _king_COG_value(aprRad, Ri, A, B, C, D):
+        """
+        Computes the magnitude differences between subsequent apertures
+
+        Parameters
+        ----------
+        aprRad : array_like
+            The apertures at which magnitudes were measured, and from
+            which to compute a curve-of-growth.
+
+        For the King profile paramater values, see `_king_profile`
+
+        Returns
+        -------
+        kingCOGvals : `numpy.array` (length - (numApr - 1))
+            The curve-of-growth values for the supplied apertures and
+            King profile parameters.
+        """
+        # Convert aprRad to a numpy array and test for sorting
+        r = np.arry(aprRad)
+        assert np.all(r.argsort() == np.arange(r.size))
+
+        # Compute the integrated King profile for each aperture provided
+        integratedKing = self._integrated_king_profile(r, Ri, A, B, C, D)
+
+        # Compute the difference between subsequent radii
+        kingCOGvalues = integratedKing[1:] - integratedKing[0:-1]
+
+        return kingCOGvalues
+
+    ##################################
+    ### END OF STATIC METHODS      ###
+    ##################################
+
     def __init__(self, image):
         """
         Constructs a PhotometryAnalyzer instance for operating on an image.
@@ -234,33 +356,12 @@ class PhotometryAnalyzer(object):
         """
         Computes the parameters for a King profile curve of growth.
 
-        See Stetson (PASP 102: 932-948, August 1990) for more information.
-
-        The King profile is given by
-        S(r; Ri,A,B,C,D) = (B*M(r; A) + (1-B)*(C*G(r; Ri) + (1-c)*H(r; D*Ri)))
-
-        where M, G, and H are Moffat, Gaussian, and exponential functions,
-        respectively.
-
-        M(r; A)   = (A-1)/pi * (1 + r**2)**(-A)
-        G(r; Ri)  = 1/(2*pi*(Ri**2)) * exp(-0.5*(r/Ri)**2)
-        H(r; D*Ri) = 1/(2*pi*(D*Ri)**2) * exp(-r/(D*Ri))
-
-        Ri = Radial seeing parameter
-        A  = Moffat exponential parameter
-        B  = Sets the fraction of contribution from the Gaussian function
-        C  = Sets the fraction of contribution from the exponential function
-        D  = The ratio of guassian and exponential widths (should be ~0.9)
 
         Parameters
         ----------
-        xCOGstars : array_like (length - numCOGstars)
-            An array of locations (in pixels) along the x-axis of bright
-            stars appropriate for determining the curve-of-growth
-
-        yCOGstars : array_like (length - numCOGstars)
-            An array of locations (in pixels) along the y-axis of bright
-            stars appropriate for determining the curve-of-growth
+        xCOGstars, yCOGstars : array_like (length - numCOGstars)
+            An array of locations (in pixels) along the x- and y-axes of
+            bright stars appropriate for determining the curve-of-growth
 
         Returns
         -------
@@ -274,6 +375,8 @@ class PhotometryAnalyzer(object):
             crowdLimit = np.sqrt(2)*21 ,
             edgeLimit = 22
         )
+
+        import pdb; pdb.set_trace()
 
         # # Count the number of stars and limit the list to either 50 stars or
         # # the brightest 25% of the stars
@@ -312,32 +415,23 @@ class PhotometryAnalyzer(object):
             # Call the "do_photometry" method
             instrumentalMagnitudes = self.aperture_photometry()
 
-        # Build the compound King profile
-        def king_model(r, Ri, A, B, C, D):
-            # Generate the terms of the King profile
-            M = (A-1)/pi * (1 + r**2)**(-A)
-            G = 1/(2*pi*(Ri**2)) * exp(-0.5*(r/Ri)**2)
-            H = 1/(2*pi*(D*Ri)**2) * exp(-r/(D*Ri))
-
-            # Compute the king profile value
-            S = B*M + (1-B)*(C*G + (1-C)*H)
-
-            return S
-
         # def king_deriv(r, Ri=1.0, A=0.5, B=0.5, C=0.5, D=0.9):
-
-
         #        ( Ri=1.0,   A=1.5,    B=0.5,    C=0.5,    D=0.9  )
         p_init = ( 1.0,      1.5,      0.5,      0.5,      0.9    )
         bounds = ((0, 100), (1, 100), (0, 1e6), (0, 1e6), (0, 1e6))
         p_opt  = optimize.curve_fit(
-            king_model,
+            self._king_model,
             xdata,
             ydata,
             p0=p_init,
             sigma=y_uncertainty
         )
 
+        # construct the parameter dictionary.
+        kingParams = dict(zip(['Ri', 'A', 'B', 'C', 'D'], p_opt))
+        import pdb; pdb.set_trace9)
+
+        return kingParams
 
     def aperture_photometry(self, xStars, yStars, starApr, skyAprIn, skyAprOut):
         """
@@ -365,8 +459,12 @@ class PhotometryAnalyzer(object):
 
         Returns
         -------
-        instrumentalMagnitudes : numpy.ndarray (shape - (numStars, numApr))
-            Instrumental magnitudes computed using the supplied parameters
+        instrumentalFlux : numpy.ndarray (shape - (numStars, numApr))
+            Instrumental flux computed using the supplied parameters. The
+            array contains one entry per star, per aperture.
+
+        sigmaFlux : numpy.ndarray (shape - (numStars, numApr))
+            Uncertainty in the computed instrumental fluxes
         """
         # Test if the supplied `starApr` is an array, then use an array of
         # apertures. If the supplied `starApr` is a scalar, then use the same
