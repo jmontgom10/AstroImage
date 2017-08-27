@@ -580,7 +580,7 @@ class ReducedScience(ResizingMixin, NumericsMixin, ReducedImage):
         daofind = DAOStarFinder(fwhm=FWHMguess, threshold=minimumSNR*std)
 
         # Use that object to find the stars in the image
-        sources = daofind(np.nan_to_num(tmpData) - median)
+        sources = daofind(tmpData - median)
 
         # Grab the image shape for later use
         ny, nx = tmpData.shape
