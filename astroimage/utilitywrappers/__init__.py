@@ -38,5 +38,5 @@ from .adaptivemesher import AdaptiveMesher
 from .astrometrysolver import AstrometrySolver
 from .imagestack import ImageStack
 from .inpainter import Inpainter
-from .photometryanalyzer import PhotometryAnalyzer
+from .photometryanalyzer import PhotometryAnalyzer, PhotometricCalibrator
 from .stokesparameters import StokesParameters
