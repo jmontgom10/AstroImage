@@ -41,7 +41,7 @@ class PhotometryAnalyzer(object):
     """
 
     ##################################
-    ### START OF STATIC METHODS    ###
+    ### START OF COG METHODS       ###
     ##################################
 
     @staticmethod
@@ -94,9 +94,9 @@ class PhotometryAnalyzer(object):
         H = 1/(2*np.pi*(D*Ri)**2) * np.exp(-r/(D*Ri))
 
         # Compute the king profile value
-        S = B*M + (1-B)*(C*G + (1-C)*H)
+        kingProfile = B*M + (1-B)*(C*G + (1-C)*H)
 
-        return S
+        return kingProfile
 
     @staticmethod
     def _integrated_king_profile(r, Ri, A, B, C, D):
@@ -117,7 +117,7 @@ class PhotometryAnalyzer(object):
         integratedH = 1.0 - ((r + D*Ri)*np.exp(-r/(D*Ri)))/(D*Ri)
 
         # Compute the total integrated value
-        integratedS = (
+        integratedKingProfile = (
             B*integratedM +
             (1-B)*(
                 C*integratedG +
@@ -125,10 +125,9 @@ class PhotometryAnalyzer(object):
             )
         )
 
-        return integratedS
+        return integratedKingProfile
 
-    @staticmethod
-    def _king_COG_value(aprRad, Ri, A, B, C, D):
+    def _king_COG_values(self, aprRad, Ri, A, B, C, D):
         """
         Computes the magnitude differences between subsequent apertures
 
@@ -142,19 +141,23 @@ class PhotometryAnalyzer(object):
 
         Returns
         -------
-        kingCOGvals : `numpy.array` (length - (numApr - 1))
+        kingCOGvals : `numpy.ndarray` (length - (numApr - 1))
             The curve-of-growth values for the supplied apertures and
             King profile parameters.
         """
         # Convert aprRad to a numpy array and test for sorting
-        r = np.arry(aprRad)
+        r = np.array(aprRad)
         assert np.all(r.argsort() == np.arange(r.size))
 
-        # Compute the integrated King profile for each aperture provided
-        integratedKing = self._integrated_king_profile(r, Ri, A, B, C, D)
+        # Add on a *minimum* aperture to account for the fact that one aperture
+        # is "gobbled up" dy the differencing procedure
+        r = np.insert(r, 0, self.minimumCOGapr)
 
-        # Compute the difference between subsequent radii
-        kingCOGvalues = integratedKing[1:] - integratedKing[0:-1]
+        # Compute the integrated King profile for each aperture provided
+        integratedKing = self.__class__._integrated_king_profile(r, Ri, A, B, C, D)
+
+        # Compute the difference between subsequent radii (in Pogson magnitudes)
+        kingCOGvalues = -2.5*np.log10(integratedKing[1:]/integratedKing[0:-1])
 
         return kingCOGvalues
 
@@ -166,8 +169,8 @@ class PhotometryAnalyzer(object):
         """
         Constructs a PhotometryAnalyzer instance for operating on an image.
 
-        Params
-        ------
+        Parameters
+        ----------
         image : astroimage.ReducedScience (or subclass)
             The astroimage object on which to perform the photometry.
         """
@@ -332,16 +335,15 @@ class PhotometryAnalyzer(object):
 
         return (medianPSF, PSFparams)
 
-    def locate_COG_stars(self, satLimit=16e3):
+    def get_COG_stars(self, fluxLimits=(5e2,16e3)):
         """
-        Finds the location of non-saturated stars good for building COG
+        Finds the location of stars good for building a curve-of-growth (COG)
 
         Parameters
         ----------
-        satLimit : int or float, optional, default: 16e3
-            Sources which contain any pixels with more than this number of
-            counts will be discarded from the returned list of sources on
-            account of being saturated.
+        fluxLimits : tuple, default: (1e3, 16e3)
+            Only sources with maximum pixels values between these limits will be
+            selected as candidate stars from which to build a curve-of-growth
 
         Returns
         -------
@@ -349,9 +351,49 @@ class PhotometryAnalyzer(object):
             An array of locations (in pixels) along the x- and y-axes of
             bright stars appropriate for determining the curve-of-growth
         """
-        pass
+        # Parse the flux limits
+        try:
+            fluxLimts = tuple(fluxLimits)
+        except:
+            raise
 
-    @lru_cache()
+        if len(fluxLimits) != 2:
+            raise ValueError('`fluxLimit` must be an iterable of length 2')
+
+        fluxMin, fluxMax = np.min(fluxLimits), np.max(fluxLimits)
+
+        # Find all the stars in the image using the slightly modified settings
+        xs, ys = self.image.get_sources(
+            FWHMguess=3.0, minimumSNR=7.0, satLimit=np.max(fluxLimits),
+            crowdLimit=21, edgeLimit=50
+        )
+
+        # Extract all those stars from the image
+        starCutouts = self.image.extract_star_cutouts(
+            xs, ys, cutoutSize=21
+        )
+
+        # Loop through sources and kill off those outside flux criteria
+        keepInds   = []
+        for iStar, starCutout in enumerate(starCutouts):
+            # Grab the min and max fluxes and attempt test their values
+            starMax = np.max(starCutout)
+            if starMax > fluxMin and starMax < fluxMax:
+                keepInds.append(iStar)
+
+        # Test that at least *some* stars meet the flux limits
+        if len(keepInds) == 0:
+            raise RuntimeError('No stars were found between fluxLimits = ({}, {})'.format(*fluxLimits))
+
+        # Convert the indices and fluxes to keep into a numpy array
+        keepInds   = np.array(keepInds)
+
+        # Only keep the starCutouts meeting the flux criteria
+        xCOGstars = xs[keepInds]
+        yCOGstars = ys[keepInds]
+
+        return xCOGstars, yCOGstars
+
     def get_curve_of_growth(self, xCOGstars, yCOGstars):
         """
         Computes the parameters for a King profile curve of growth.
@@ -369,14 +411,12 @@ class PhotometryAnalyzer(object):
             A dictionary containing the King Profile parameters which best
             fit the observations
         """
-        # Grab the star positions using the same default values as get_psf
-        xStars, yStars = self.image.get_sources(
-            satLimit = satLimit,
-            crowdLimit = np.sqrt(2)*21 ,
-            edgeLimit = 22
-        )
-
-        import pdb; pdb.set_trace()
+        # # Grab the star positions using the same default values as get_psf
+        # xStars, yStars = self.image.get_sources(
+        #     satLimit = satLimit,
+        #     crowdLimit = np.sqrt(2)*21 ,
+        #     edgeLimit = 22
+        # )
 
         # # Count the number of stars and limit the list to either 50 stars or
         # # the brightest 25% of the stars
@@ -410,30 +450,74 @@ class PhotometryAnalyzer(object):
         #
         # expModel = models.custom_model(exp_model, fit_deriv=exp_deriv)
 
-        # Measure the photometry at 15 different apertures
-        for apr in range(3, 18):
-            # Call the "do_photometry" method
-            instrumentalMagnitudes = self.aperture_photometry()
+        # Test that xCOGstars and yCOGstars match
+        if len(xCOGstars) != len(yCOGstars):
+            raise ValueError('The size of `xCOGstars` and `yCOGstars` must match')
 
-        # def king_deriv(r, Ri=1.0, A=0.5, B=0.5, C=0.5, D=0.9):
-        #        ( Ri=1.0,   A=1.5,    B=0.5,    C=0.5,    D=0.9  )
-        p_init = ( 1.0,      1.5,      0.5,      0.5,      0.9    )
-        bounds = ((0, 100), (1, 100), (0, 1e6), (0, 1e6), (0, 1e6))
-        p_opt  = optimize.curve_fit(
-            self._king_model,
-            xdata,
-            ydata,
+        # Test that enough stars have been provided to constrain the curve-of-growth
+        # if len(xCOGstars) < 6:
+        #     raise ValueError('Too few stars to constrain the curve-of-growth')
+
+        # Estimate the FWHM and build the COG apertures from that
+        _, psfParams = self.get_psf()
+        psfFWHM      = np.sqrt(psfParams['sminor']*psfParams['smajor'])
+
+        # Generate the appropriate apertures to use for COG building
+        starApr   = np.linspace(0.5, 5.0, 20.0)*psfFWHM
+        skyAprIn  = 5.5*psfFWHM
+        skyAprOut = skyAprIn + 2.0*psfFWHM
+
+        # Store the minimum starApr for use in the King profile fitting
+        self.minimumCOGapr = np.min(starApr)
+
+        # Call the "aperture_photometry" method
+        starFlux, fluxUncert = self.aperture_photometry(
+            xCOGstars, yCOGstars, starApr, skyAprIn, skyAprOut
+        )
+
+        # Construct the abscissa and ordinate values for the King COG
+        xCOG      = 0.5*(starApr[1:] + starApr[0:-1])
+        fluxRatio = starFlux[:,1:]/starFlux[:,0:-1]
+        yCOG      = -2.5*np.log10(fluxRatio)
+
+        # Apply a median filtered mean to the yCOG data
+        yCOGmed = []
+        yCOGstd = []
+        for yData in yCOG.T:
+            mean, median, stddev = sigma_clipped_stats(yData)
+            yCOGmed.append(median)
+            yCOGstd.append(stddev)
+        yCOGmed = np.array(yCOGmed)
+        yCOGstd = np.array(yCOGstd)
+
+        # Do any required error-propagation for this quantity
+        if self.image.has_uncertainty:
+            fluxRatioUncert = np.sqrt(
+                (fluxUncert[:,1:]/starFlux[:,1:])**2 +
+                (fluxUncert[:,0:-1]/starFlux[:,0:-1])**2
+            )
+            yUncert = 2.5*fluxRatioUncert/(np.log(10)*fluxRatio)
+        else:
+            yUncert = np.array([1.0 for i in range(fluxRatio.size)])
+
+        # Initalize some parameter values for the King profile COG
+        #        ( Ri=1.0,      A=1.5,    B=0.5,    C=0.5,    D=0.9  )
+        p_init = ( 0.5*psfFWHM, 1.5,      0.5,      0.5,      0.9    )
+        bounds = ((0, 100), (1.0+1.e-6, 2.0), (0.0, 1.0), (0.0, 1.0), (0.0, 1e6))
+        p_opt, p_cov = optimize.curve_fit(
+            self._king_COG_values,
+            starApr[1:],
+            yCOGmed,
             p0=p_init,
-            sigma=y_uncertainty
+            sigma=yCOGstd
         )
 
         # construct the parameter dictionary.
         kingParams = dict(zip(['Ri', 'A', 'B', 'C', 'D'], p_opt))
-        import pdb; pdb.set_trace9)
 
         return kingParams
 
-    def aperture_photometry(self, xStars, yStars, starApr, skyAprIn, skyAprOut):
+    def aperture_photometry(self, xStars, yStars, starApr, skyAprIn, skyAprOut, gain=1.0):
         """
         Computes the aperture photometry for the specified locations
 
@@ -459,29 +543,33 @@ class PhotometryAnalyzer(object):
 
         Returns
         -------
-        instrumentalFlux : numpy.ndarray (shape - (numStars, numApr))
+        starFlux : numpy.ndarray (shape - (numStars, numApr))
             Instrumental flux computed using the supplied parameters. The
             array contains one entry per star, per aperture.
 
-        sigmaFlux : numpy.ndarray (shape - (numStars, numApr))
+        fluxUncert : numpy.ndarray (shape - (numStars, numApr))
             Uncertainty in the computed instrumental fluxes
         """
         # Test if the supplied `starApr` is an array, then use an array of
         # apertures. If the supplied `starApr` is a scalar, then use the same
         # aperture for all the stars.
-        multipleApr = hasattr(starApr, '__iter__')
+        multipleApr = hasattr(starApr, '__iter__') and hasattr(starApr, '__len__')
         if multipleApr:
-            # Construct the stellar apertures
-            starApertures = [CircularAperture((xStars, yStars), r=r) for r in starApr]
+            # Double check that this is *really* a multiple aperture case
+            if len(starApr) == 1:
+                # If it's just one aperture stored in an iterable object...
+                multipleApr   = False
+                starApertures = CircularAperture((xStars, yStars), r=starApr)
+            else:
+                # Construct the stellar apertures
+                starApertures = [CircularAperture((xStars, yStars), r=r) for r in starApr]
         else:
             # Treat the starApr variable as a scalar
             try:
-                starApr = float(starApr)
+                starApr       = float(starApr)
                 starApertures = CircularAperture((xStars, yStars), r=starApr)
             except:
                 raise
-
-        # TODO: Check if uncertainty attribute exist, if not, then require gain
 
         # Compute the raw stellar photometry
         starRawPhotTable = aperture_photometry(
@@ -502,24 +590,30 @@ class PhotometryAnalyzer(object):
             error=self.image.uncertainty,
             pixelwise_error=True
         )
-
         # Compute the mean packgroud value at each star
         bkg_mean = skyRawPhotTable['aperture_sum'] / skyApertures.area()
 
         # Subtract the average sky background and store the resultself
         if multipleApr:
-            bkg_sum = [bkg_mean * sa.area() for sa in starApertures]
-            subtractedStarPhot = np.array([
-                starRawPhotTable['aperture_sum_{}'.format(i)] - bkg_sum[i]
-                for i in range(len(starApr))])
+            # Loop through each aperture and compute the background subtracted value
+            subtractedStarPhot   = []
+            subtractedPhotUncert = []
+            for iApr, sa in enumerate(starApertures):
+                # Compute the *total* sky contribution to each star for this aperture
+                thisBkg = bkg_mean.data * sa.area()
 
-            # Compute the uncertainty in the background subtracted photometry.
-            subtractedPhotUncert = np.array([
-                np.sqrt(
-                    starRawPhotTable['aperture_sum_err_{}'.format(i)]**2 +
-                    skyRawPhotTable['aperture_sum_err']**2
-                ) for i in range(len(starApr))
-            ])
+                # Compute the sky-subtracted stellar flux
+                subtractedStarPhot.append(np.array(
+                    starRawPhotTable['aperture_sum_{}'.format(iApr)] - thisBkg
+                ))
+
+                # If the image included an uncertainty array, then do error-prop
+                if self.image.has_uncertainty:
+                    subtractedPhotUncert.append(np.array(np.sqrt(
+                        starRawPhotTable['aperture_sum_err_{}'.format(iApr)]**2 +
+                        (skyRawPhotTable['aperture_sum_err'] * (sa.area() / skyApertures.area()))**2
+                    )))
+
         else:
             bkg_sum = bkg_mean * starApertures.area()
             subtractedStarPhot = starRawPhotTable['aperture_sum'] - bkg_sum
@@ -528,7 +622,14 @@ class PhotometryAnalyzer(object):
                 skyRawPhotTable['aperture_sum_err']**2
             )
 
-        return subtractedStarPhot, subtractedPhotUncert
+        # Re-convert everything to a numpy array
+        subtractedStarPhot   = np.array(subtractedStarPhot).T
+        subtractedPhotUncert = np.array(subtractedPhotUncert).T
+
+        if self.image.has_uncertainty:
+            return subtractedStarPhot, subtractedPhotUncert
+        else:
+            return subtractedStarPhot, None
 
     def locate_maximum_SNR_apertures(self, xStars, yStars):
         """
@@ -544,7 +645,7 @@ class PhotometryAnalyzer(object):
 
         Returns
         -------
-        starApr : `numpy.array` (length - numStars)
+        starApr : `numpy.ndarray` (length - numStars)
             The aperture radius (in pixels) at which the apeture flux
             reaches a maximum signal-to-noise ratio (SNR).
         """
@@ -559,19 +660,71 @@ class PhotometryAnalyzer(object):
 
         Parameters
         ----------
-        starApr : array_like ( length - numStars)
+        starApr : array_like (length - numStars)
             The aperture radius (in pixels) at which the apeture flux is a
             maximum signal-to-noise ratio (SNR).
 
-        instrumentalMagnitudes : array_like (shape - (numStars, numApr))
+        instrumentalMagnitudes : array_like (length - numStars)
             Instrumental magnitudes computed using the supplied parameters
 
         kingParams : dict
             A dictionary containing the King Profile parameters which best
             fit the observations
-        """
-        pass
 
+        Returns
+        -------
+        correctedMagnitudes : array_like (length - numStars)
+        """
+        # Compute the value of the king profile integrated from starApr to inf.
+        Ri = kingParams['Ri']
+        A  = kingParams['A']
+        B  = kingParams['B']
+        C  = kingParams['C']
+        D  = kingParams['D']
+
+        # Generate each term of the integrated King profile
+        integratedM = (1+starApr**2)**(1-A)
+        integratedG = np.exp(-0.5*(starApr/Ri)**2)
+        integratedH = ((starApr + D*Ri)*np.exp(-starApr/(D*Ri)))/(D*Ri)
+
+        # Generate the aperture correction
+        apertureCorrection =  (
+            B*integratedM +
+            (1-B)*(
+                C*integratedG +
+                (1-C)*integratedH
+            )
+        )
+
+        # Apply the aperture correction to the instrumentalMagnitudes
+        correctedMagnitudes = instrumentalMagnitudes + apertureCorrection
+
+        return correctedMagnitudes
     ##################################
     ### END OF ANALYZERS           ###
     ##################################
+
+class PhotometricCalibrator():
+    """
+    Provides methods to calibrate the images to match catalog photometry
+    """
+
+    def __init__(self, imageDict, catalogName):
+        """
+        Constructs a PhotometricCalibrator instance from the provided images
+
+        Parameters
+        ----------
+        imageDict : dict
+            A dictionary containing the filter names as keys (matching the
+            filter names in the provided `catalogName`) and ReducedScience
+            images as the values.
+
+        catalogName : str
+            The name of the catalog to which the photometry should be
+            matched for calibration.
+        """
+        pass
+
+
+    def calibrate_photometry(self, catalog)
