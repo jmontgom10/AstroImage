@@ -756,13 +756,13 @@ class ReducedScience(ResizingMixin, NumericsMixin, ReducedImage):
         return xs, ys
 
     @lru_cache()
-    def get_sources_at_coords(self, searchCoords, pointingTolerance=5.0,
+    def get_sources_at_coords(self, searchCoords, pointingTolerance=2.5,
         **kwargs):
         """
         Finds any sources near to the specified coordinates.
 
-        If no star meeting the detection critera can be found at a given
-        coordinates, then a None is returned for that star.
+        If no star meeting the detection critera can be found at a
+        given coordinate, then a NaN is returned for that star.
 
         Parameters
         ----------
@@ -772,7 +772,7 @@ class ReducedScience(ResizingMixin, NumericsMixin, ReducedImage):
             the detection criteria will be returned, or a None value if no stars
             near that point meet the detection criteria.
 
-        pointingTolerance : int or float, optional, default: 10.0
+        pointingTolerance : int or float, optional, default: 2.5
             The maximum difference (in arcsec) between the expected location and
             the detected location.
 
@@ -805,7 +805,7 @@ class ReducedScience(ResizingMixin, NumericsMixin, ReducedImage):
         xStars, yStars = xAllStars[idx], yAllStars[idx]
 
         # Test if the matches are within the tolerance.
-        toleranceQuantity = u.Quantity(pointingTolerance, u.degree)
+        toleranceQuantity = u.Quantity(pointingTolerance, u.arcsec).to(u.degree)
         badMatches        = d2d >  toleranceQuantity
         badInds           = np.where(badMatches)
 
