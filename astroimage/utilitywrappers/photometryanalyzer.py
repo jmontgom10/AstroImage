@@ -53,7 +53,7 @@ class PhotometryAnalyzer(object):
 
         The King profile is given by
 
-        S(r; Ri,A,B,C,D) = (B*M(r; A) + (1-B)*(C*G(r; Ri) + (1-c)*H(r; D*Ri)))
+        S(r; Ri,A,B,C,D) = (B*M(r; A) + (1-B)*(C*G(r; Ri) + (1-C)*H(r; D*Ri)))
 
         where M, G, and H are Moffat, Gaussian, and exponential functions,
         respectively.
