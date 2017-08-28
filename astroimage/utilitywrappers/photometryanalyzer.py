@@ -150,7 +150,7 @@ class PhotometryAnalyzer(object):
         assert np.all(r.argsort() == np.arange(r.size))
 
         # Add on a *minimum* aperture to account for the fact that one aperture
-        # is "gobbled up" dy the differencing procedure
+        # is "gobbled up" by the differencing procedure
         r = np.insert(r, 0, self.minimumCOGapr)
 
         # Compute the integrated King profile for each aperture provided
