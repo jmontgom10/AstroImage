@@ -26,6 +26,7 @@ from astropy import units as u
 from astropy.stats import sigma_clip, sigma_clipped_stats
 from photutils import (DAOStarFinder, data_properties,
     CircularAperture, CircularAnnulus, aperture_photometry)
+from astroquery.vizier import Vizier
 
 # AstroImage imports
 from ..reduced import ReducedScience
@@ -411,45 +412,6 @@ class PhotometryAnalyzer(object):
             A dictionary containing the King Profile parameters which best
             fit the observations
         """
-        # # Grab the star positions using the same default values as get_psf
-        # xStars, yStars = self.image.get_sources(
-        #     satLimit = satLimit,
-        #     crowdLimit = np.sqrt(2)*21 ,
-        #     edgeLimit = 22
-        # )
-
-        # # Count the number of stars and limit the list to either 50 stars or
-        # # the brightest 25% of the stars
-        # numberOfStars = xStars.size
-        # if numberOfStars > 50:
-        #     xStars, yStars = xStars[0:50], yStars[0:50]
-
-        # # Define the mofat function in terms of Steton's formulation
-        # # alpha = (A*np.pi/gamma) + 1
-        # alpha2amplitude = lambda model: (model.alpha - 1)/np.pi
-        # M = models.Moffat1D(
-        #     gamma=1.0,
-        #     tied={'amplitude':alpha2amplitude}
-        #     fixed={'gamma':True}
-        #     bounds={'amplitude':[1,1e6]}
-        # )
-        #
-        # # Define the gaussian function
-        # stddev2amplitude = lambda model: 1.0/(2*np.pi*model.stddev**2)
-        # G = models.Gaussian1D(
-        #     mean=0.0,
-        #     tied={'amplitude':stddev2amplitude}
-        #     fixed={'mean':True}
-        # )
-        #
-        # # Define the exponential model
-        # def exp_model(r, Dratio=0.9, Ri_width=1.0):
-        #     return np.exp(-r/(Dratio*Ri_width))/(2*np.pi*Dratio*Ri_width)
-        # def exp_deriv(x, Dratio=0.9, Ri_width=1.0):
-        #     return np.exp(-r/(Dratio*Ri_width))/(2*np.pi*(Dratio*Ri_width)**2)
-        #
-        # expModel = models.custom_model(exp_model, fit_deriv=exp_deriv)
-
         # Test that xCOGstars and yCOGstars match
         if len(xCOGstars) != len(yCOGstars):
             raise ValueError('The size of `xCOGstars` and `yCOGstars` must match')
@@ -490,6 +452,13 @@ class PhotometryAnalyzer(object):
         yCOGmed = np.array(yCOGmed)
         yCOGstd = np.array(yCOGstd)
 
+        # Store the COG data for later use
+        self.starApr = starApr
+        self.xCOG    = xCOG
+        self.yCOG    = yCOG
+        self.yCOGmed = yCOGmed
+        self.yCOGstd = yCOGstd
+
         # Do any required error-propagation for this quantity
         if self.image.has_uncertainty:
             fluxRatioUncert = np.sqrt(
@@ -503,21 +472,67 @@ class PhotometryAnalyzer(object):
         # Initalize some parameter values for the King profile COG
         #        ( Ri=1.0,      A=1.5,    B=0.5,    C=0.5,    D=0.9  )
         p_init = ( 0.5*psfFWHM, 1.5,      0.5,      0.5,      0.9    )
-        bounds = ((0, 100), (1.0+1.e-6, 2.0), (0.0, 1.0), (0.0, 1.0), (0.0, 1e6))
+        # bounds = ((0, 100), (1.0+1.e-6, 2.0), (0.0, 1.0), (0.0, 1.0), (0.0, np.inf))
+        lowBounds = (0, 1.0+1e-6, 0, 0, 0)
+        hiBounds  = (100, 2, 1, 1, np.inf)
+        bounds    = (lowBounds, hiBounds)
         p_opt, p_cov = optimize.curve_fit(
             self._king_COG_values,
             starApr[1:],
             yCOGmed,
             p0=p_init,
+            bounds=bounds,
             sigma=yCOGstd
         )
 
-        # construct the parameter dictionary.
+        # Construct the parameter dictionary. Store it and return it
         kingParams = dict(zip(['Ri', 'A', 'B', 'C', 'D'], p_opt))
+        self.kingParams = kingParams
 
         return kingParams
 
-    def aperture_photometry(self, xStars, yStars, starApr, skyAprIn, skyAprOut, gain=1.0):
+    def show_curve_of_growth(self):
+        """Displays the curve-of-growth as a sanity check for the user."""
+        # Check if the curve-of-growth has already been determined
+        if not hasattr(self, 'kingParams'):
+            raise RuntimeError(
+                'The curve-of-growth has not yet been determined for this object'
+            )
+
+        # Import plotting functionality
+        import matplotlib.pyplot as plt
+
+        # Generate plot
+        plt.ion()
+        plt.figure()
+
+        # Show the curve-of-growth data
+        for yData in self.yCOG:
+            plt.plot(self.xCOG, yData, marker='.', color='k')
+
+        # Show the median vaules
+        plt.errorbar(
+            self.xCOG, self.yCOGmed, yerr=self.yCOGstd,
+            color='red', linewidth=5.0
+        )
+
+        # Show the best fit to the median values
+        plt.plot(
+            self.xCOG,
+            self._king_COG_values(
+                self.starApr[1:], **self.kingParams
+            ),
+            color='blue', linewidth=3.0
+        )
+
+        # Label the axes
+        plt.xlabel('Aperture Radius [pix]')
+        plt.ylabel('Curve-Of-Growth value [Delta Mags]')
+
+        # Turn off interative plotting
+        plt.ioff()
+
+    def aperture_photometry(self, xStars, yStars, starApr, skyAprIn, skyAprOut):
         """
         Computes the aperture photometry for the specified locations
 
@@ -631,7 +646,7 @@ class PhotometryAnalyzer(object):
         else:
             return subtractedStarPhot, None
 
-    def locate_maximum_SNR_apertures(self, xStars, yStars):
+    def get_maximum_SNR_apertures(self, xStars, yStars):
         """
         Finds the aperture at which each stellar flux has a maximum SNR
 
@@ -649,9 +664,10 @@ class PhotometryAnalyzer(object):
             The aperture radius (in pixels) at which the apeture flux
             reaches a maximum signal-to-noise ratio (SNR).
         """
-        pass
+        # TODO: Make this actually work! For now, just return 3.2 for all stars
+        return np.ones((len(xStars),))*3.2
 
-    def apply_aperture_corrections(self, starApr, instrumentalMagnitudes, kingParams):
+    def compute_aperture_corrections(self, starApr, kingParams):
         """
         Corrects aperture photometry using the supplied King Profile
 
@@ -664,18 +680,17 @@ class PhotometryAnalyzer(object):
             The aperture radius (in pixels) at which the apeture flux is a
             maximum signal-to-noise ratio (SNR).
 
-        instrumentalMagnitudes : array_like (length - numStars)
-            Instrumental magnitudes computed using the supplied parameters
-
         kingParams : dict
             A dictionary containing the King Profile parameters which best
             fit the observations
 
         Returns
         -------
-        correctedMagnitudes : array_like (length - numStars)
+        appertureCorrections : array_like (length - numStars)
+            The number of magnitudes to be added to each star provided its
+            aperture photometry was measured using the corresponding starApr
         """
-        # Compute the value of the king profile integrated from starApr to inf.
+        # Disect the kingParams
         Ri = kingParams['Ri']
         A  = kingParams['A']
         B  = kingParams['B']
@@ -688,18 +703,16 @@ class PhotometryAnalyzer(object):
         integratedH = ((starApr + D*Ri)*np.exp(-starApr/(D*Ri)))/(D*Ri)
 
         # Generate the aperture correction
-        apertureCorrection =  (
+        fractionOfFluxOutsideOfApertures =  1.0 - (
             B*integratedM +
             (1-B)*(
                 C*integratedG +
                 (1-C)*integratedH
             )
         )
+        apertureCorrections = -2.5*np.log10(fractionOfFluxOutsideOfApertures)
 
-        # Apply the aperture correction to the instrumentalMagnitudes
-        correctedMagnitudes = instrumentalMagnitudes + apertureCorrection
-
-        return correctedMagnitudes
+        return apertureCorrections
     ##################################
     ### END OF ANALYZERS           ###
     ##################################
@@ -707,24 +720,404 @@ class PhotometryAnalyzer(object):
 class PhotometricCalibrator():
     """
     Provides methods to calibrate the images to match catalog photometry
+
+    Class Methods
+    -------------
+    print_available_wavebands
     """
 
-    def __init__(self, imageDict, catalogName):
+    ##################################
+    ### START OF CLASS VARIABLES   ###
+    ##################################
+
+    # Bands and zero point flux [in Jy = 10^(-26) W /(m^2 Hz)]
+    # Following table from Bessl, Castelli & Plez (1998)
+    # Passband  Effective wavelength (microns)  Zero point (Jy)
+    # U	        0.366                           1790
+    # B         0.438                           4063
+    # V         0.545                           3636
+    # R         0.641                           3064
+    # I         0.798                           2416
+    # J         1.22                            1589
+    # H         1.63                            1021
+    # K         2.19                            640
+
+    # Similarly, for the NIR
+    # Flux of 0-mag source in 2MASS (Jy)
+    # Taken from Cohen et al. (2003) -- http://adsabs.harvard.edu/abs/2003AJ....126.1090C
+    zeroFlux = dict(zip(
+        np.array(['U',    'B',    'V',    'R' ,   'I'     'J',    'H',    'Ks' ]),
+        np.array([1790.0, 4063.0, 3636.0, 3064.0, 2416.0, 1594.0, 1024.0, 666.8])*u.Jy
+    ))
+
+    wavelength = dict(zip(
+        np.array(['U',   'B',   'V',   'R',   'I',   'J',   'H',   'Ks' ]),
+        np.array([0.366, 0.438, 0.545, 0.641, 0.798, 1.235, 1.662, 2.159])*u.um
+    ))
+
+    ##################################
+    ### END OF CLASS VARIABLES     ###
+    ##################################
+
+    ##################################
+    ### START OF CLASS METHODS     ###
+    ##################################
+
+    @classmethod
+    def print_available_wavebands(cls):
+        # TODO: add Sloan bands...
+        print("""
+Full Name       Abbreviation    Wavelength      f0
+                                [micron]        [Jy]
+----------------------------------------------------
+Johnson-U       U               0.366           1790.0
+Johnson-B       B               0.438           4063.0
+Johnson-V       V               0.545           3636.0
+Johnson-R       R               0.641           3064.0
+Johnson-I       I               0.798           2416.0
+
+2MASS-J         J               1.235           1594.0
+2MASS-H         H               1.662           1024.0
+2MASS-Ks        Ks              2.159            666.8
+""")
+
+    ##################################
+    ### END OF CLASS METHODS       ###
+    ##################################
+
+    def __init__(self, imageDict, wavelengthDict, catalogName, catalogParser):
         """
         Constructs a PhotometricCalibrator instance from the provided images
 
         Parameters
         ----------
         imageDict : dict
-            A dictionary containing the filter names as keys (matching the
-            filter names in the provided `catalogName`) and ReducedScience
+            A dictionary containing the waveband names as keys and ReducedScience
             images as the values.
+
+        wavelengthDict : dict
+            A dictionary containing the waveband names as keys and wavelengths as
+            the values. This is really just used to determine which wavebands
+            can be used to construct calibrated *color* maps.
 
         catalogName : str
             The name of the catalog to which the photometry should be
             matched for calibration.
+
+        catalogParser : function
+            A function which takes an astropy.table.Table instance containing a
+            stellar photometry catalog as an input, and returns a table
+            containing the stellar photometry and uncertainty necessary to
+            complete photometric calibration. The first two columns should
+            contain the RA and Dec of the entry. Each waveband should have two
+            columns: one for the photometric data and one for the uncertainties.
+            The uncertainty column names must match the waveband column names
+            with an 'e_' prepended to the string name.
+
+            Example:
+            def catParser(inputTable):
+                '''
+                Converts APASS photometry to Landolt standard Johnson V and R
+                '''
+                # Initalize an empty table
+                outputTable = Table()
+
+                # Grab the RA and Dec values
+                outputTable['_RAJ2000'] = inputTable['_RAJ2000']
+                outputTable['_DEJ2000'] = inputTable['_DEJ2000']
+
+                # Grab the V-band photometry
+                outputTable['V']   = inputTable['Vmag']
+                outputTable['e_V'] = inputTable['e_Vmag']
+
+                # Grab the APASS photometry to compute R-band values
+                r_mag   = inputTable['r_mag']
+                e_r_mag = inputTable['e_r_mag']
+                g_mag   = inputTable['g_mag']
+                e_g_mag = inputTable['e_g_mag']
+                r_g     = r_mag - g_mag
+                e_r_g   = np.sqrt(
+                    e_r_mag**2 + e_g_mag**2
+                )
+
+                # This linear regression was independently computed...
+                m, b   = -1.112865077, -0.143307088
+
+                # Compute the R-band photomery and store it
+                Rmag   = m*(r_g) + b + r_mag
+                e_Rmag = np.sqrt(
+                    (m*e_r_g)**2 + (e_r_mag)**2
+                )
+                outputTable['R']   = Rmag
+                outputTable['e_R'] = e_Rmag
+
+                return outputTable
         """
-        pass
+        # Check that the provided images have astrometry
+        if not np.all([img.has_wcs for img in imageDict.values()]):
+            raise ValueError('All images in `imageDict` must have astrometric solutions')
 
+        # Store the image dictionary, catalog name, and parsing function
+        self.imageDict      = imageDict
+        self.catalogName    = catalogName
+        self.catalogParser  = catalogParser
 
-    def calibrate_photometry(self, catalog)
+        # Grab the wavelengths available for calibration.
+        availableWavebands = self.__class__.zeroFlux.keys()
+
+        # Get wavelength sorted arrays of wavebands and wavelengths
+        wavebands   = []
+        wavelengths = []
+        for waveband, wavelength in wavelengthDict.items():
+            if waveband not in availableWavebands:
+                raise ValueError('{} is not in the list of available wavebands'.format(waveband))
+            wavebands.append(waveband)
+            wavelengths.append(wavelength)
+
+        # Convert the waveband and wavelength lists to arrays
+        wavebands   = np.array(wavebands)
+        wavelengths = np.array(wavelengths)
+
+        # Sort in order of increasing wavelength
+        sortInds    = wavelengths.argsort()
+        wavebands   = wavebands[sortInds]
+        wavelengths = wavelengths[sortInds]
+
+        # Store the sorted versions of the wavelengths for later use
+        self.wavebands   = wavebands
+        self.wavelengths = wavelengths
+
+    def _retrieve_catalog_photometry(self):
+        """
+        Downloads the relevant catalog data for calibration
+        """
+        # TODO: generalize this to be able to handle unaligned images
+
+        # Compute the image width and height of the image
+        maxBt = +91
+        maxTp = -91
+        maxLf = -1
+        maxRt = +361
+        for img in self.imageDict.values():
+            ny, nx = img.shape
+            lfrt, bttp = img.wcs.wcs_pix2world([0, ny], [0, nx], 0)
+            lf, rt = lfrt
+            bt, tp = bttp
+
+            if bt < maxBt: maxBt = bt
+            if tp > maxTp: maxTp = tp
+            if lf > maxLf: maxLf = lf
+            if rt < maxRt: maxRt = rt
+
+        # Grab the maximum width and the median (RA, Dec)
+        RAcen, DecCen = 0.5*(maxLf + maxRt), 0.5*(maxBt + maxTp)
+        height = (maxTp - maxBt)*u.deg
+        width  = (maxLf - maxRt)*np.cos(np.deg2rad(DecCen))*u.deg
+
+        # Download the requested catalog
+        Vizier.ROW_LIMIT = -1
+        catalogList = Vizier.query_region(
+            SkyCoord(
+                ra=RAcen, dec=DecCen,
+                unit=(u.deg, u.deg),
+                frame='fk5'
+            ),
+            width=width,
+            height=height,
+            catalog=self.catalogName
+        )
+
+        # Apply the catalog parser to the downloaded catalog and store
+        self.catalog = self.catalogParser(catalogList[0])
+
+    def _compute_magnitude_pairs(self, wavebandList):
+        """
+        Computes aperture corrected magnitudes, paired with catalog entries
+
+        Loops through each element of the waveband list and returns a nested
+        dictionary where the keys to the root level are the wavebands provided
+        in the `wavebandList` argments
+
+        Parameters
+        ----------
+        wavebandList : array_like
+            The names of the wavebands for which to compute magnitude pairs
+
+        Returns
+        -------
+        magnitudePairDict : dict
+            A dictionary containing the aperture corrected instrumental
+            instrumental magnitudes and the corresponding catalog magnitudes
+        """
+        # Before proceeding to measure photometry, build a complete list of
+        # rows with masked data
+        maskedRows = False
+        for waveband in wavebandList:
+            maskedRows = np.logical_or(maskedRows, self.catalog[waveband].mask)
+
+        # Loop through each waveband and measure photometry
+        for waveband in wavebandList
+            # Approx catalog stars in the (only) image!
+            thisImg = self.imageDict[waveband]
+
+            # Construct a SkyCoord instance from the star coordinates
+            starCoords = SkyCoord(
+                self.catalog['_RAJ2000'], self.catalog['_DEJ2000']
+            )
+
+            # Locate these stars within the image
+            xs, ys = thisImg.get_sources_at_coords(starCoords)
+
+            # Determine which stars were not actually matched
+            goodInds = np.where(np.logical_and(np.isfinite(xs), np.isfinite(ys)))
+            xs, ys   = xs[goodInds], ys[goodInds]
+
+            # Grab the corresponding rows of the photometric catalog
+            starCatalog = self.catalog[goodInds]
+
+            # Construct a PhotometryAnalyzer instance for this image
+            photAnalyzer = PhotometryAnalyzer(thisImg)
+
+            # Determine the aperture at which the signal-to-noise ratio reaches a
+            # maximum for each of these stars.
+            starAprs = photAnalyzer.get_maximum_SNR_apertures(xs, ys)
+
+            # Compute the curve of growth parameters for this image
+            xCOG, yCOG = photAnalyzer.get_COG_stars()
+            kingParams = photAnalyzer.get_curve_of_growth(xCOG, yCOG)
+
+            # TODO: Determine some much better radius to use for aperture photometry
+            skyAprIn  = 10*kingParams['Ri']
+            skyAprOut = skyAprIn + 2.5
+
+            # Perform basic aperture photometry using the estimate maximum SNR radii
+            instrumentalFluxes = []
+            fluxUncerts        = []
+            for iStar, starInfo in enumerate(zip(xs, ys, starAprs)):
+                # Break apart the star information
+                xs1, ys1, starApr = starInfo
+
+                # Measure the rudimentary aperture photometry for these stars
+                thisFlux, thisFluxUncert = photAnalyzer.aperture_photometry(
+                    xs1, ys1, starApr, skyAprIn, skyAprOut
+                )
+
+                # Store the photometry
+                instrumentalFluxes.append(thisFlux)
+                fluxUncerts.append(thisFluxUncert)
+
+            # Convert back to numpy arrays
+            instrumentalFluxes = np.array(instrumentalFluxes).flatten()
+            fluxUncerts        = np.array(fluxUncerts).flatten()
+
+            # Eliminate any fluxes which make no logical sense
+            goodInds           = np.where(np.logical_and(
+                instrumentalFluxes > 0,
+                np.logical_not(maskedRows)
+            ))
+            instrumentalFluxes = instrumentalFluxes[goodInds]
+            fluxUncerts        = fluxUncerts[goodInds]
+            starAprs           = starAprs[goodInds]
+            starCatalog        = starCatalog[goodInds]
+
+            # Convert the instrumental fluxes into instrumental (Pogson) magnitudes
+            instrumentalMagnitudes = -2.5*np.log10(instrumentalFluxes)
+
+            # Compute the uncertainty if they exist
+            if np.all([fu is not None for fu in fluxUncerts]):
+                instrumentalMagUncerts = 2.5*fluxUncerts/(instrumentalFluxes*np.log(10))
+            else:
+                instrumentalMagUncerts = None
+
+            # Compute the amount of aperture correction for the used starApertures
+            # NOTE: Assume that aperture correction introduces zero uncertainty
+            apertureCorrections = photAnalyzer.compute_aperture_corrections(
+                starAprs, kingParams
+            )
+
+            # Apply the aperture correction to the instrumentalMagnitudes
+            correctedMagnitudes = instrumentalMagnitudes - apertureCorrections
+
+            # Pair the measured photometry against the catalog photometry
+            wavebandMagDict = {
+                'catalog': {
+                    'data': starCatalog[waveband],
+                    'uncertainty': starCatalog['e_' + waveband]
+                },
+                'instrument': {
+                    'data': correctedMagnitudes,
+                    'uncertainty': instrumentalMagUncerts
+                }
+            }
+
+            # Store the data for this waveband in another dictionary
+            magnitudePairDict[waveband] = wavebandMagDict
+
+        return magnitudePairDict
+
+    def _singleband_calibration(self):
+        """Computes the calibrated image using just a single waveband matching"""
+        # Grab the instrumental and catalog magnitudes
+        thisWaveband      = self.wavebands[0]
+        magnitudePairDict = self._compute_magnitude_pairs(thisWaveband)
+
+        # Compute the differences between instrumental and calibrated magnitudes
+        # and propagate the errors.
+        magnitudeDifferences = (
+            magnitudePairDict['catalog']['data'] -
+            magnitudePairDict['instrument']['data']
+        )
+        magnitudeDiffUncert = np.sqrt(
+            magnitudePairDict['catalog']['uncertainty']**2 +
+            magnitudePairDict['instrument']['uncertainty']**2
+        )
+
+        # Compute a single-band zero-point magnitude
+        weights = 1.0/magnitudeDiffUncert**2
+        zeroPointMag = np.sum(weights*magnitudeDifferences)/np.sum(weights)
+
+        # Use the zero-point magnitude and zero-point flux to compute a
+        # calibrated version of the input image.
+        zeroPointFlux    = self.__class__.zeroFlux[thisWaveband]
+        calibFactor      = zeroPointFlux*10**(-0.4*zeroPointMag)
+        calibData        = calibFactor*self.imageDict[thisWaveband].data
+        calibUncertainty = calibFactor*self.imageDict[thisWaveband].uncertainty
+
+        # Store the Jy calibrated data in a ReducedScience image
+        calibratedImg = ReducedScience(
+            calibData.value,
+            uncertainty=calibUncertainty.value,
+            header=self.imageDict[thisWaveband].header,
+            properties={'units':calibFactor.unit}
+        )
+
+        # Store the image in a dictionary and return to user
+        calibratedImgDict = {
+            thisWaveband: calibratedImg
+        }
+
+        return calibratedImgDict
+
+    def _multiband_calibration(self):
+        """Computes the calibrated images using multiple wavebands and color"""
+        # Loop through each waveband and compute the photometry for *that* image
+        # and the subsequent (in wavelength) image. Then, compute the color
+        # image based on the aperture photometry from the two images
+        for iWave, waveband in enumerate(self.wavebands[0:-1]):
+            import pdb; pdb.set_trace()
+
+    def calibrate_photometry(self):
+        """
+        Matches image photometry to the catalog photometry entries
+        """
+        # Start by downloading and parsing the requested catalog
+        self._retrieve_catalog_photometry()
+
+        # If there is more than band to work with, then do multi-band calibration
+        if self.wavelengths.size > 1:
+            calibratedImgDict = self._multiband_calibration()
+        # If there is only one band to work with, then do single-band calibration
+        else:
+            calibratedImgDict = self._singleband_calibration()
+
+        return calibratedImgDict
