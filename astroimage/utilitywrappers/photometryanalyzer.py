@@ -721,9 +721,18 @@ class PhotometricCalibrator():
     """
     Provides methods to calibrate the images to match catalog photometry
 
-    Class Methods
-    -------------
-    print_available_wavebands
+    Full Name       Abbreviation    Wavelength      f0
+                                    [micron]        [Jy]
+    ----------------------------------------------------
+    Johnson-U       U               0.366           1790.0
+    Johnson-B       B               0.438           4063.0
+    Johnson-V       V               0.545           3636.0
+    Johnson-R       R               0.641           3064.0
+    Johnson-I       I               0.798           2416.0
+
+    2MASS-J         J               1.235           1594.0
+    2MASS-H         H               1.662           1024.0
+    2MASS-Ks        Ks              2.159            666.8
     """
 
     ##################################
@@ -757,32 +766,6 @@ class PhotometricCalibrator():
 
     ##################################
     ### END OF CLASS VARIABLES     ###
-    ##################################
-
-    ##################################
-    ### START OF CLASS METHODS     ###
-    ##################################
-
-    @classmethod
-    def print_available_wavebands(cls):
-        # TODO: add Sloan bands...
-        print("""
-Full Name       Abbreviation    Wavelength      f0
-                                [micron]        [Jy]
-----------------------------------------------------
-Johnson-U       U               0.366           1790.0
-Johnson-B       B               0.438           4063.0
-Johnson-V       V               0.545           3636.0
-Johnson-R       R               0.641           3064.0
-Johnson-I       I               0.798           2416.0
-
-2MASS-J         J               1.235           1594.0
-2MASS-H         H               1.662           1024.0
-2MASS-Ks        Ks              2.159            666.8
-""")
-
-    ##################################
-    ### END OF CLASS METHODS       ###
     ##################################
 
     def __init__(self, imageDict, wavelengthDict, catalogName, catalogParser):
