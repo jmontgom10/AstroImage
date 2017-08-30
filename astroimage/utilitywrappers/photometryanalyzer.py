@@ -956,6 +956,7 @@ Johnson-I       I               0.798           2416.0
             maskedRows = np.logical_or(maskedRows, self.catalog[waveband].mask)
 
         # Loop through each waveband and measure photometry
+        magnitudePairDict = {}
         for waveband in wavebandList:
             # Approx catalog stars in the (only) image!
             thisImg = self.imageDict[waveband]
@@ -968,12 +969,8 @@ Johnson-I       I               0.798           2416.0
             # Locate these stars within the image
             xs, ys = thisImg.get_sources_at_coords(starCoords)
 
-            # Determine which stars were not actually matched
-            goodInds = np.where(np.logical_and(np.isfinite(xs), np.isfinite(ys)))
-            xs, ys   = xs[goodInds], ys[goodInds]
-
             # Grab the corresponding rows of the photometric catalog
-            starCatalog = self.catalog[goodInds]
+            starCatalog = self.catalog
 
             # Construct a PhotometryAnalyzer instance for this image
             photAnalyzer = PhotometryAnalyzer(thisImg)
@@ -996,6 +993,12 @@ Johnson-I       I               0.798           2416.0
             for iStar, starInfo in enumerate(zip(xs, ys, starAprs)):
                 # Break apart the star information
                 xs1, ys1, starApr = starInfo
+
+                # Fill unmatched stars with NaNs and continue
+                if not np.isfinite(xs1) or not np.isfinite(ys1):
+                    instrumentalFluxes.append(np.NaN)
+                    fluxUncerts.append(np.NaN)
+                    continue
 
                 # Measure the rudimentary aperture photometry for these stars
                 thisFlux, thisFluxUncert = photAnalyzer.aperture_photometry(
@@ -1059,7 +1062,7 @@ Johnson-I       I               0.798           2416.0
         """Computes the calibrated image using just a single waveband matching"""
         # Grab the instrumental and catalog magnitudes
         thisWaveband      = self.wavebands[0]
-        magnitudePairDict = self._compute_magnitude_pairs(thisWaveband)
+        magnitudePairDict = self._compute_magnitude_pairs(self.wavebands)
 
         # Compute the differences between instrumental and calibrated magnitudes
         # and propagate the errors.
