@@ -956,7 +956,7 @@ Johnson-I       I               0.798           2416.0
             maskedRows = np.logical_or(maskedRows, self.catalog[waveband].mask)
 
         # Loop through each waveband and measure photometry
-        for waveband in wavebandList
+        for waveband in wavebandList:
             # Approx catalog stars in the (only) image!
             thisImg = self.imageDict[waveband]
 
