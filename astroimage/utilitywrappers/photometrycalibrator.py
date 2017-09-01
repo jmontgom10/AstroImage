@@ -481,6 +481,19 @@ class PhotometryCalibrator(object):
                     xs1, ys1, starApr, skyAprIn, skyAprOut
                 )
 
+                # Make sure that we only have scalars to deal with
+                try:
+                    testLen  = len(thisFlux)
+                    thisFlux = thisFlux[0]
+                except:
+                    pass
+
+                try:
+                    testLen        = len(thisFluxUncert)
+                    thisFluxUncert = thisFluxUncert[0]
+                except:
+                    pass
+
                 # Store the photometry
                 instrumentalFluxes.append(thisFlux)
                 fluxUncerts.append(thisFluxUncert)
