@@ -382,11 +382,13 @@ class ResizingMixin(object):
                   nx, nx0//nx)
 
             # Computed weighted rebinning
-            rebinData = (self.data.reshape(sh).sum(-1).sum(1))
+            nanMask   = np.isfinite(self.data).astype(float)
+            rebinData = np.nansum(np.nansum(self.data.reshape(sh), axis=-1), axis=1)
+            numInSum  = np.sum(np.sum(nanMask.reshape(sh), axis=-1), axis=1)
 
             # Check if total flux conservation was requested.
             # If not, then multiply by the pixel size ratio.
-            if not total: rebinData *= pixRatio
+            if not total: rebinData /= numInSum
 
         elif ((nx % nx0) == 0) and ((ny % ny0) == 0):
             # Handle integer upsampling
