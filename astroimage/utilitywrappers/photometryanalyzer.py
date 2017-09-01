@@ -623,17 +623,23 @@ class PhotometryAnalyzer(object):
         else:
             bkg_sum = bkg_mean * starApertures.area()
             subtractedStarPhot = starRawPhotTable['aperture_sum'] - bkg_sum
-            subtractedPhotUncert = np.sqrt(
-                starRawPhotTable['aperture_sum_err']**2 +
-                skyRawPhotTable['aperture_sum_err']**2
-            )
 
-        # Re-convert everything to a numpy array
+            # If the image included an uncertainty array, then do error-prop
+            if self.image.has_uncertainty:
+                subtractedPhotUncert = np.sqrt(
+                    starRawPhotTable['aperture_sum_err']**2 +
+                    skyRawPhotTable['aperture_sum_err']**2
+                )
+
+        # Re-convert list of photometry to a numpy array
         subtractedStarPhot   = np.array(subtractedStarPhot).T
-        subtractedPhotUncert = np.array(subtractedPhotUncert).T
 
         if self.image.has_uncertainty:
+            # Convert uncertainties back into an array, too, if they exist
+            subtractedPhotUncert = np.array(subtractedPhotUncert).T
+
             return subtractedStarPhot, subtractedPhotUncert
+
         else:
             return subtractedStarPhot, None
 
