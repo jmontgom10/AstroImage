@@ -523,7 +523,7 @@ class PhotometryAnalyzer(object):
         # Turn off interative plotting
         plt.ioff()
 
-    def aperture_photometry(self, xStars, yStars, starApr, skyAprIn, skyAprOut):
+    def aperture_photometry(self, xStars, yStars, starApr, skyAprIn, skyAprOut, mask=None):
         """
         Computes the aperture photometry for the specified locations
 
@@ -546,6 +546,11 @@ class PhotometryAnalyzer(object):
         skyAprOut : int or float
             The outer radius (in pixels) of the cirucal annulus within which to
             sum up the sky counts.
+
+        mask : array_like (bool), optional
+            An optional mask provided by the user to specify which pixels
+            contain bad data and should be ignored when doing photometry. Pixels
+            with a True value in the mask will be ignored during photometry.
 
         Returns
         -------
@@ -582,7 +587,8 @@ class PhotometryAnalyzer(object):
             self.image.data,
             starApertures,
             error=self.image.uncertainty,
-            pixelwise_error=True
+            pixelwise_error=True,
+            mask=mask
         )
 
         # Construct the sky apertures
