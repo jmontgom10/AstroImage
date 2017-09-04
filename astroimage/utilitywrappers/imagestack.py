@@ -960,7 +960,7 @@ class ImageStack(object):
         # Grab the appropriate reference image depending on whether or not the
         # image stack has already been aligned...
         if self.aligned:
-            # If subPixel accurace was requested, then start by constructing
+            # If subPixel accuracy was requested, then start by constructing
             # a reference image to be used in sub-pixel alignment.
             referenceImage = self.build_median_image()
 
