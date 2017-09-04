@@ -7,6 +7,7 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 # Scipy imports
 import numpy as np
 from scipy import odr
+from skimage import measure, morphology
 
 # Astropy imports
 from astropy.table import Table
@@ -605,7 +606,7 @@ class PhotometryCalibrator(object):
         zeroPointMagCF  /= pixelArea
 
         # The final calibrated image is equal to...
-        # flux_cal = (f0 * zeroPointMagCF) * f_inst * (colorCF * fluxRatio)
+        # flux_cal = (f0 * zeroPointMagCF) * f_inst
         calIntenImg = (
             self.imageDict[thisWaveband] *
             (zeroPointFlux * zeroPointMagCF)
@@ -691,15 +692,30 @@ class PhotometryCalibrator(object):
             zeroPointMagCF1  /= pixelArea1
 
             # Compute linear-space color correction factor and fluxRatio image
-            colorCF1  = 10**wavebandRegression1.beta[0]
+            colorCF1      = 10**wavebandRegression1.beta[0]
+
+            # Use a simple flux ratio
             fluxRatio = self.imageDict[waveband1]/self.imageDict[waveband2]
+            goodSNR = (np.abs(fluxRatio.snr) > 3.0)
+
+            # Locate the regions with consistently good SNR
+            all_labels  = measure.label(goodSNR)
+            all_labels1 = morphology.remove_small_objects(
+                all_labels, min_size=0.001*all_labels.size
+            )
+            label_hist, labels = np.histogram(all_labels1, np.unique(all_labels1))
+            label_mode  = labels[label_hist.argmax()]
+            goodSNR     = (all_labels1 != label_mode).astype(int)
+
+            # Smooth out the boundaries of the "goodSNR" regino
+            fluxRatio1 = np.median(fluxRatio.data[goodSNR])
 
             # The final calibrated image is equal to...
             # flux_cal = (f0 * zeroPointMagCF) * f_inst * (colorCF * fluxRatio)
             calIntenImg1 = (
                 self.imageDict[waveband1] *
                 (zeroPointFlux1 * zeroPointMagCF1) *
-                (colorCF1 * fluxRatio)
+                (colorCF1 * fluxRatio1)
             )
 
             ####################################################################
@@ -747,7 +763,7 @@ class PhotometryCalibrator(object):
             calIntenImg2 = (
                 self.imageDict[waveband2] *
                 (zeroPointFlux2 * zeroPointMagCF2) *
-                (colorCF2 * fluxRatio)
+                (colorCF2 * fluxRatio1)
             )
 
             ####################################################################
