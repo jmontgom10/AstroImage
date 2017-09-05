@@ -416,11 +416,11 @@ class StokesParameters(object):
         outStokes = copy.deepcopy(self)
 
         # Attempt to apply the rebinning to each image
-        try:
-            if self._StokesParameters__ippaImages is not None:
-                rebinnedI_0 = self._StokesParameters__ippaImages['I_0'].rebin(outShape)
-                rebinnedI_45 = self._StokesParameters__ippaImages['I_45'].rebin(outShape)
-                rebinnedI_90 = self._StokesParameters__ippaImages['I_90'].rebin(outShape)
+        if self._StokesParameters__ippaImages is not None:
+            try:
+                rebinnedI_0   = self._StokesParameters__ippaImages['I_0'].rebin(outShape)
+                rebinnedI_45  = self._StokesParameters__ippaImages['I_45'].rebin(outShape)
+                rebinnedI_90  = self._StokesParameters__ippaImages['I_90'].rebin(outShape)
                 rebinnedI_135 = self._StokesParameters__ippaImages['I_135'].rebin(outShape)
 
                 # Construct the IPPA image dictionary
@@ -430,8 +430,10 @@ class StokesParameters(object):
 
                 # Store the IPPA image dictionary in the output instance
                 outStokes._StokesParameters__ippaImages   = ippaDict
+            except:
+                raise
 
-
+        try:
             rebinnedI = self._StokesParameters__stokesImages['I'].rebin(outShape)
             rebinnedQ = self._StokesParameters__stokesImages['Q'].rebin(outShape)
             rebinnedU = self._StokesParameters__stokesImages['U'].rebin(outShape)
