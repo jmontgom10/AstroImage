@@ -10,7 +10,7 @@ config = {
     'url': 'https://github.com/jmontgom10/AstroImage',
     'download_url': 'https://github.com/jmontgom10/AstroImage/zipball/master',
     'author_email': 'jmontgom.10@gmail.com',
-    'version': '0.85',
+    'version': '0.9',
     'python_requires': '>=3.3',
     'install_requires': [
         'nose >= 1.3',
