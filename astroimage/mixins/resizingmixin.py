@@ -386,6 +386,13 @@ class ResizingMixin(object):
             rebinData = np.nansum(np.nansum(self.data.reshape(sh), axis=-1), axis=1)
             numInSum  = np.sum(np.sum(nanMask.reshape(sh), axis=-1), axis=1)
 
+            # Only consider a rebinned pixel valid if *at least* 75% of the
+            # constituent pixels were finite
+            dy, dx  = ny0//ny, nx0//nx
+            badPix  = (numInSum < 0.75*(dx*dy))
+            badInds = np.where(badPix)
+            rebinData[badInds] = np.NaN
+
             # Check if total flux conservation was requested.
             # If not, then multiply by the pixel size ratio.
             if not total: rebinData /= numInSum
