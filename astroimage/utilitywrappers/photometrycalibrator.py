@@ -705,9 +705,9 @@ class PhotometryCalibrator(object):
             )
             label_hist, labels = np.histogram(all_labels1, np.unique(all_labels1))
             label_mode  = labels[label_hist.argmax()]
-            goodSNR     = (all_labels1 != label_mode).astype(int)
+            goodSNR     = (all_labels1 != label_mode)
 
-            # Smooth out the boundaries of the "goodSNR" regino
+            # Smooth out the boundaries of the "goodSNR" region
             fluxRatio1 = np.median(fluxRatio.data[goodSNR])
 
             # The final calibrated image is equal to...
