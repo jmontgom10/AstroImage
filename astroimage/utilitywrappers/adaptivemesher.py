@@ -374,3 +374,58 @@ class AdaptiveMesher(object):
 
         # Return the pseudo-AMR data to the user
         return self.adaptiveMeshedData
+
+    def reapply_amr(self, inArray):
+        """
+        Applies the AMR results to additional arrays.
+
+        This can be usefor for computing the rebinning based on statistics from
+        one set of objects but applying the identical binning scheme to an
+        alternative set of arrays.
+
+        Parameters
+        ----------
+        inArray : numpy.ndarray
+            An array of numbers to be adaptive mesh rebinned
+
+        Returns
+        -------
+        outArray : numpy.ndarray
+            The adaptive mesh rebinned version of the input array
+        """
+        # Test if amrBinning has already been produced
+        if not hasattr(self, 'amrBinnings'):
+            raise RuntimeError('AdaptiveMesher has not yet been run')
+
+        # Grab the shape of the input array
+        ny, nx = inArray.shape
+
+        # Identify which pixels are finite
+        finitePix = np.isfinite(inArray).astype(int)
+
+        # Loop through each binning level and compute the AMR outArray
+        outArray = inArray.copy()
+        for rebinLevel in np.unique(self.amrBinnings).astype(int):
+            # Skip over the trivial versions
+            if rebinLevel <= 1: continue
+
+            # Compute the rebinning shape for this level
+            sh = (
+                ny//rebinLevel, rebinLevel,
+                nx//rebinLevel, rebinLevel
+            )
+
+            # Compute the rebinned xx and yy arrays
+            # First down-sample...
+            tmpArray = np.nansum(np.nansum(inArray.reshape(sh), axis=-1), axis=1)
+
+            # then up-sample
+            tmpArray = np.kron(tmpArray, np.ones((rebinLevel, rebinLevel)))
+
+            # Divide by
+
+            # Replace the corresponding indices with these rebinned values
+            copyInds = np.where(self.amrBinnings == rebinLevel)
+            outArray[copyInds] = tmpArray[copyInds]
+
+        return outArray
