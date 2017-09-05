@@ -667,8 +667,61 @@ class PhotometryAnalyzer(object):
             The aperture radius (in pixels) at which the apeture flux
             reaches a maximum signal-to-noise ratio (SNR).
         """
-        # TODO: Make this actually work! For now, just return 3.2 for all stars
-        return np.ones((len(xStars),))*3.2
+        # Delete any stars which were not detected in this image
+        goodStars = np.logical_and(
+            np.isfinite(xStars),
+            np.isfinite(yStars)
+        )
+        goodInds  = np.where(goodStars)[0]
+        badInds   = np.where(np.logical_not(goodStars))[0]
+        xStars1   = xStars[goodStars]
+        yStars1   = yStars[goodStars]
+
+        # Measure initial photometry
+        testAprs = np.arange(1, 9)
+
+        try:
+            # Measure the photometry
+            signal, noise = self.aperture_photometry(
+                xStars1, yStars1, testAprs, 22, 24
+            )
+
+            # Compute the signal to noise
+            SNRs = signal/noise
+
+            # Insert nan values where expected
+            badRow = np.NaN*testAprs
+            for badInd in badInds:
+                SNRs = np.insert(SNRs, badInd, badRow, axis=0)
+
+        except:
+            raise RuntimeError('Could not measure photometry for specified stars')
+
+        # Loop through each star and find its maximum SNR
+        optimumAprs = []
+        for xs, ys, SNR in zip(xStars, yStars, SNRs):
+            # Skip bad stars
+            if not np.isfinite(xs) or not np.isfinite(ys):
+                optimumAprs.append(np.NaN)
+                continue
+
+            # Locate the rough region of optimum SNR
+            bestApr    = SNR.argmax() + 1
+
+            # Remeasure the SNR around that point
+            reTestAprs = np.arange(bestApr-0.9, bestApr+1, 0.1)
+            reTestSignal, reTestNoise =  self.aperture_photometry(
+                xs, ys, reTestAprs, 22, 24
+            )
+
+            # Recompute the signal-to-noise ratio
+            reTestSNR = reTestSignal/reTestNoise
+
+            # Select the optimum aperture from this SNR
+            reTestAprs[reTestSNR.argmax()]
+            optimumAprs.append(reTestAprs[reTestSNR.argmax()])
+
+        return np.array(optimumAprs)
 
     def compute_aperture_corrections(self, starApr, kingParams):
         """
