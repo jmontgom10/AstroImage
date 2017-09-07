@@ -712,8 +712,9 @@ class PhotometryCalibrator(object):
 
         return calImgDict
 
-    def _multiband_calibration(self):
+    def _multiband_calibration(self, resolvedColorCorrection=False):
         """Computes the calibrated images using multiple wavebands and color"""
+        # Define a simple linear function to be used for model fitting
         def linearFunc(B, x):
             '''Linear function y = m*x + b'''
             # B is a vector of the parameters.
@@ -789,40 +790,46 @@ class PhotometryCalibrator(object):
 
             # Use a simple flux ratio
             fluxRatio = self.imageDict[waveband1]/self.imageDict[waveband2]
-            goodSNR = (np.abs(fluxRatio.snr) > 3.0)
 
-            # Construct the star mask for this pair
-            starMask = np.logical_or(
-                self.starMaskDict[waveband1],
-                self.starMaskDict[waveband2]
-            )
+            if not resolvedColorCorrection:
+                goodSNR = (np.abs(fluxRatio.snr) > 3.0)
 
-            # Don't consider high SNR pixels *inside* stars, as the principal
-            # interest in the calibration of *intensity* in extended emission
-            # objects such as galaxies or nebulae
-            goodSNR = np.logical_and(
-                goodSNR,
-                np.logical_not(starMask)
-            )
+                # Construct the star mask for this pair
+                starMask = np.logical_or(
+                    self.starMaskDict[waveband1],
+                    self.starMaskDict[waveband2]
+                )
 
-            # Locate the regions with consistently good SNR
-            all_labels  = measure.label(goodSNR)
-            all_labels1 = morphology.remove_small_objects(
-                all_labels, min_size=0.001*all_labels.size
-            )
+                # Don't consider high SNR pixels *inside* stars, as the principal
+                # interest in the calibration of *intensity* in extended emission
+                # objects such as galaxies or nebulae
+                goodSNR = np.logical_and(
+                    goodSNR,
+                    np.logical_not(starMask)
+                )
 
-            # Grab the central region of the image
-            ny, nx = all_labels1.shape
-            cy, cx = np.int(ny//2), np.int(nx//2)
-            lf, rt = cx - np.int(0.1*nx), cx + np.int(0.1*nx)
-            bt, tp = cy - np.int(0.1*ny), cy + np.int(0.1*nx)
-            centerRegion = all_labels1[bt:tp, lf:rt]
-            label_hist, labels = np.histogram(centerRegion, np.unique(centerRegion))
-            label_mode  = labels[label_hist.argmax()]
-            goodSNR     = (all_labels1 == label_mode)
+                # Locate the regions with consistently good SNR
+                all_labels  = measure.label(goodSNR)
+                all_labels1 = morphology.remove_small_objects(
+                    all_labels, min_size=0.001*all_labels.size
+                )
 
-            # Smooth out the boundaries of the "goodSNR" region
-            fluxRatio1 = np.median(fluxRatio.data[goodSNR])
+                # Grab the central region of the image
+                ny, nx = all_labels1.shape
+                cy, cx = np.int(ny//2), np.int(nx//2)
+                lf, rt = cx - np.int(0.1*nx), cx + np.int(0.1*nx)
+                bt, tp = cy - np.int(0.1*ny), cy + np.int(0.1*nx)
+                centerRegion = all_labels1[bt:tp, lf:rt]
+                label_hist, labels = np.histogram(centerRegion, np.unique(centerRegion))
+                label_mode  = labels[label_hist.argmax()]
+                goodSNR     = (all_labels1 == label_mode)
+
+                # Smooth out the boundaries of the "goodSNR" region
+                fluxRatio1 = np.median(fluxRatio.data[goodSNR])
+            else:
+                # If the resolved color-correction was requested, then copy the
+                # full flux ratio image for this use
+                fluxRatio1 = fluxRatio
 
             # The final calibrated image is equal to...
             # flux_cal = (f0 * zeroPointMagCF) * f_inst * (colorCF * fluxRatio)
@@ -923,18 +930,33 @@ class PhotometryCalibrator(object):
 
             return calImgDict
 
-    def calibrate_photometry(self):
+    def calibrate_photometry(self, resolvedColorCorrection=False):
         """
-        Matches image photometry to the catalog photometry entries
+        Calibrates the images provided using APASS and/or 2MASS data
+
+        Matches image photometry to the catalog photometry entries and
+        computes the calibration factors based on those entries.
+
+        Parameters
+        ----------
+        resolvedColorCorrection : bool, optional, default : False
+            A value of `True` causes the color correction terms computed for
+            multi-band calibration to be applied using the *resolved* flux
+            ratio. A value of `False` causes the flux ratio of the brightest
+            high signa-to-noise zone near the image center to be used to compute
+            a median flux ratio value, and that scalar value is then used to
+            apply the color correction.
         """
         # Start by downloading and parsing the requested catalog
         self._retrieve_catalog_photometry()
 
-        # If there is more than band to work with, then do multi-band calibration
         if self.wavelengths.size > 1:
-            calibratedImgDict = self._multiband_calibration()
-        # If there is only one band to work with, then do single-band calibration
+            # If there is more than band to work with, then do multi-band calibration
+            calibratedImgDict = self._multiband_calibration(
+                resolvedColorCorrection=resolvedColorCorrection
+            )
         else:
+            # If there is only one band to work with, then do single-band calibration
             calibratedImgDict = self._singleband_calibration()
 
         return calibratedImgDict
