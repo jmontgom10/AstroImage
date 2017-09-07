@@ -871,15 +871,6 @@ class PhotometryCalibrator(object):
             # Compute the calibrated color image from the regression coefficients
             calColorImg = colorRegression.beta[1] + colorRegression.beta[0]*instColor
 
-            # # DEBUG PLOTS
-            # import matplotlib.pyplot as plt
-            # plt.ion()
-            # plt.figure()
-            # plt.errorbar(colorData.x, colorData.y,
-            #     xerr=colorData.sx, yerr=colorData.sy,
-            #     marker='.', color='k', linestyle='none')
-            # plt.plot(colorData.x, linearFunc(colorRegression.beta, colorData.x))
-
             # Build an image to store these calibrated images
             colorKey     = waveband1 + waveband2
             waveband1Key = '_'.join([waveband1, colorKey])
