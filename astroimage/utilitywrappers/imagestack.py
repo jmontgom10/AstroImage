@@ -705,8 +705,8 @@ class ImageStack(object):
 
         # Set an instance variable to indicate whether the images have been aligned
         if issubclass(self.imageType, (RawScience, ReducedScience)):
-            # Assume that science images have not been aligned
-            self.__aligned = False
+            # Test if these images are aligned
+            self.__aligned = self._test_alignment()
         else:
             # Calibration images do not require alignment
             self.__aligned = True
@@ -928,6 +928,31 @@ class ImageStack(object):
     #TODO: break this up into two separate methods:
     # 1) integer_offsets
     # 2) subpixel_offsets
+
+    def _test_alignment(self):
+        """
+        Tests if the images in the stack are aligned (using build in WCS)
+        """
+        # If there are less than 2 images, then things are aligned by definition
+        if self.numberOfImages < 2: return True
+
+        try:
+            # Attempt to get the image offsets using the WCS
+            dx, dy = self.get_wcs_offsets()
+
+            # Compute the radial offsets
+            radOffsets = np.sqrt(
+                (dx[1:] - dx[0])**2 +
+                (dy[1:] - dy[0])**2
+            )
+
+            # Test if all the radial offsets are less than half a pixel
+            aligned = all(radOffsets < 0.5)
+
+            return aligned
+        except:
+            # If offsets could not be computed, then assume unaligned images
+            return False
 
     def get_cross_correlation_offsets(self, subPixel=False, satLimit=16e3):
         """
