@@ -19,6 +19,7 @@ from astroquery.vizier import Vizier
 
 # AstroImage imports
 from ..reduced import ReducedScience
+from .imagestack import ImageStack
 from .photometryanalyzer import PhotometryAnalyzer
 
 class PhotometryCalibrator(object):
@@ -300,12 +301,27 @@ class PhotometryCalibrator(object):
         if len(imageDict) < 1:
             raise ValueError('`imageDict` must contain at least one image')
 
-        # TODO: Infer the catalogName from the provided wavebands
-        # TODO: Create a classmethod catalogParser for APASS data (sloan_to_Johnson)
-        # NOTE: Sloan_to_Johnson transformations already exist.
-        # Store the image dictionary, catalog name, and parsing function
-        # self.catalogName    = catalogName
-        # self.catalogParser  = catalogParser
+        # Briefly dissociate the images from the keys for image alignment
+        imageKeys = []
+        imageList = []
+        for key, value in imageDict.items():
+            imageKeys.append(key)
+            imageList.append(value)
+
+        # Construct an ImageStack instance to test alignment
+        imageStack = ImageStack(imageList)
+        if not imageStack.aligned:
+            print('Performing necessary image alignment')
+            imageStack.align_images_with_cross_correlation()
+
+            # Reconstruct the image dictionary
+            imageDict1 = dict(zip(imageKeys, imageStack.imageList))
+        else:
+            imageDict1 = imageDict
+
+        # Construct the necessary star masks for later use
+        starMaskList = imageStack._produce_individual_star_masks()
+        starMaskDict = dict(zip(imageKeys, starMaskList))
 
         # Grab the wavelengths available for calibration.
         availableWavebands = self.__class__.zeroFlux.keys()
