@@ -269,7 +269,12 @@ class PhotometryCalibrator(object):
         outputTable['e_V'] = apassPhotTable['e_Vmag']
 
         # Compute the R-band photometry
-        R, e_R = cls._APASS_Vgr_to_R(apassPhotTable)
+        # NOTE: This transformation (taken from actual literature!) dosen't
+        # seem to be working at all.
+        # R, e_R = cls._APASS_Vgr_to_R(apassPhotTable)
+
+        # NOTE: Use this (personally computed) transformation instead
+        R, e_R = cls._APASS_gr_to_R(apassPhotTable)
         outputTable['R']   = R
         outputTable['e_R'] = e_R
 
