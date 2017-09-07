@@ -381,9 +381,10 @@ class PhotometryCalibrator(object):
         wavelengths = wavelengths[sortInds]
 
         # Store the sorted versions of the wavelengths for later use
-        self.imageDict   = imageDict
-        self.wavebands   = wavebands
-        self.wavelengths = wavelengths
+        self.imageDict    = imageDict1
+        self.starMaskDict = starMaskDict
+        self.wavebands    = wavebands
+        self.wavelengths  = wavelengths
 
     def _retrieve_catalog_photometry(self):
         """
@@ -750,14 +751,35 @@ class PhotometryCalibrator(object):
             fluxRatio = self.imageDict[waveband1]/self.imageDict[waveband2]
             goodSNR = (np.abs(fluxRatio.snr) > 3.0)
 
+            # Construct the star mask for this pair
+            starMask = np.logical_or(
+                self.starMaskDict[waveband1],
+                self.starMaskDict[waveband2]
+            )
+
+            # Don't consider high SNR pixels *inside* stars, as the principal
+            # interest in the calibration of *intensity* in extended emission
+            # objects such as galaxies or nebulae
+            goodSNR = np.logical_and(
+                goodSNR,
+                np.logical_not(starMask)
+            )
+
             # Locate the regions with consistently good SNR
             all_labels  = measure.label(goodSNR)
             all_labels1 = morphology.remove_small_objects(
                 all_labels, min_size=0.001*all_labels.size
             )
-            label_hist, labels = np.histogram(all_labels1, np.unique(all_labels1))
+
+            # Grab the central region of the image
+            ny, nx = all_labels1.shape
+            cy, cx = np.int(ny//2), np.int(nx//2)
+            lf, rt = cx - np.int(0.1*nx), cx + np.int(0.1*nx)
+            bt, tp = cy - np.int(0.1*ny), cy + np.int(0.1*nx)
+            centerRegion = all_labels1[bt:tp, lf:rt]
+            label_hist, labels = np.histogram(centerRegion, np.unique(centerRegion))
             label_mode  = labels[label_hist.argmax()]
-            goodSNR     = (all_labels1 != label_mode)
+            goodSNR     = (all_labels1 == label_mode)
 
             # Smooth out the boundaries of the "goodSNR" region
             fluxRatio1 = np.median(fluxRatio.data[goodSNR])
