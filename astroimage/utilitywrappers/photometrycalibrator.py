@@ -279,6 +279,39 @@ class PhotometryCalibrator(object):
         else:
             raise NotImplemented('Catalog matching is not yet implemented')
 
+    @staticmethod
+    def _repairMagnitudePairDictUncertainties(magnitudePairDict):
+        """
+        Ensures that no catalog magnitudes have *zero* uncertainty
+        """
+        # Make a copy to return to the user
+        outputMagnitudePairDict = magnitudePairDict.copy()
+
+        # Ensure that there are not a bunch of "zero uncertainty" entries
+        for waveband in magnitudePairDict.keys():
+            # Grab the uncertainty values for this waveband
+            wavebandUncert = magnitudePairDict[waveband]['catalog']['uncertainty']
+
+            # Locate any zero-value uncertainties
+            zeroUncert = (wavebandUncert == 0)
+
+            if np.sum(zeroUncert) == len(zeroUncert):
+                # If all the uncertainties are zero, then force them all to 0.075
+                minRealUncertainty = 0.075
+            else:
+                # Otherwise, grab the minumum *non-zero* uncertainty
+                minRealUncertainty = np.min(
+                    wavebandUncert[np.where(np.logical_not(zeroUncert))]
+                )
+
+            # Replace the zero-valued uncertainties with a better value
+            wavebandUncert[np.where(zeroUncert)] = minRealUncertainty
+
+            # Replace the uncertainty column with its repaired value
+            outputMagnitudePairDict[waveband]['catalog']['uncertainty'] = wavebandUncert
+
+        return outputMagnitudePairDict
+
     ##################################
     ### END OF STATIC METHODS      ###
     ##################################
@@ -329,7 +362,7 @@ class PhotometryCalibrator(object):
         # Get wavelength sorted arrays of wavebands and wavelengths
         wavebands   = []
         wavelengths = []
-        for waveband in imageDict.keys():
+        for waveband in imageDict1.keys():
             # Check if the waveband is in the list of known wavebands
             if waveband not in availableWavebands:
                 raise ValueError('{} is not in the list of available wavebands'.format(waveband))
@@ -573,8 +606,8 @@ class PhotometryCalibrator(object):
             # Replace each entry with its own data, sans the masked rows
             wavebandMagDict = {
                 'catalog': {
-                    'data': magnitudePairDict[waveband]['catalog']['data'][goodRowInds],
-                    'uncertainty':magnitudePairDict[waveband]['catalog']['uncertainty'][goodRowInds]
+                    'data': magnitudePairDict[waveband]['catalog']['data'][goodRowInds].data.data,
+                    'uncertainty': magnitudePairDict[waveband]['catalog']['uncertainty'][goodRowInds].data.data
                 },
                 'instrument': {
                     'data': magnitudePairDict[waveband]['instrument']['data'][goodRowInds],
@@ -584,6 +617,9 @@ class PhotometryCalibrator(object):
 
             # Restore this data in the magnitudePairDict
             magnitudePairDict[waveband] = wavebandMagDict
+
+        # Make sure the uncertainties in the magnitudePairDict make sense
+        magnitudePairDict = self.__class__._repairMagnitudePairDictUncertainties(magnitudePairDict)
 
         return magnitudePairDict
 
