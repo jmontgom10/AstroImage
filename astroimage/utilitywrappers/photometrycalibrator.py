@@ -214,6 +214,41 @@ class PhotometryCalibrator(object):
         v_numerator   = (e_gr**2 + e_b7**2)
         v_colorTerm   = ((v_numerator/numerator) + (e_a7/a7)**2)
         e_R           = np.sqrt(e_V**2 + v_colorTerm)
+
+        return R, e_R
+
+    @staticmethod
+    def _APASS_gr_to_R(apassPhotTable):
+        """
+        Computes the photometric transformation from SDSS g', r' to Johnson-R
+
+        Uses the results of the MCMC regression I personally performed using
+        *every* APASS-Landolt star match I could find.
+        """
+        # Setup the regression values and uncertainties for the relation
+        # R(Landolt) - r(APASS) = cc*(r(APASS) - g(APASS)) + zp
+        cc, zp = -1.112865, -0.143307
+        s_cc, s_zp, rhos_ccs_zp = 3.93E-05, 1.79E-05, -1.97E-05
+
+        # Grab the APSS g' and r', values
+        g    = apassPhotTable['g_mag']
+        e_g  = apassPhotTable['e_r_mag']
+        r    = apassPhotTable['r_mag']
+        e_r  = apassPhotTable['e_r_mag']
+        gr   = g - r
+        e_gr = np.sqrt(e_g**2 + e_r**2)
+
+        # Compute the Johnson-R value from these
+        R = r + cc*gr + zp
+
+        # Compute the uncertainty in the Johnson-R value
+        variance_colorTerm = (s_cc/cc)**2 + (e_gr/gr)**2
+        e_R = np.sqrt(
+            e_r**2 +
+            variance_colorTerm +
+            s_zp**2
+        )
+
         return R, e_R
 
     @classmethod
