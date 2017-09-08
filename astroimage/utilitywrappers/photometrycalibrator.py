@@ -662,6 +662,12 @@ class PhotometryCalibrator(object):
             else:
                 instrumentalMagUncerts = None
 
+            # Mask any instrumental magnitudes with uncertainties greater than 0.1
+            maskedRows = np.logical_or(
+                maskedRows,
+                instrumentalMagUncerts > 0.1
+            )
+
             # Compute the amount of aperture correction for the used starApertures
             # NOTE: Assume that aperture correction introduces zero uncertainty
             apertureCorrections = photAnalyzer.compute_aperture_corrections(
