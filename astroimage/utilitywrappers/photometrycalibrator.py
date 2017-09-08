@@ -425,7 +425,7 @@ class PhotometryCalibrator(object):
         imageList = []
         for key, value in imageDict.items():
             imageKeys.append(key)
-            imageList.append(value)
+            imageList.append(value.divide_by_expTime())
 
         # Construct an ImageStack instance to test alignment
         imageStack = ImageStack(imageList)
@@ -433,10 +433,8 @@ class PhotometryCalibrator(object):
             print('Performing necessary image alignment')
             imageStack.align_images_with_cross_correlation()
 
-            # Reconstruct the image dictionary
-            imageDict1 = dict(zip(imageKeys, imageStack.imageList))
-        else:
-            imageDict1 = imageDict
+        # Reconstruct the image dictionary
+        imageDict1 = dict(zip(imageKeys, imageStack.imageList))
 
         # Construct the necessary star masks for later use
         starMaskList = imageStack._produce_individual_star_masks()
