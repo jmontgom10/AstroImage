@@ -218,6 +218,46 @@ class PhotometryCalibrator(object):
         return R, e_R
 
     @staticmethod
+    def _APASS_ri_to_R(apassPhotTable):
+        """
+        Converts the provided APASS magnitudes to the Johsnon-Cousins system
+
+        Full set of transformations from Jordi et al. (2006)
+        (Taken from http://classic.sdss.org/dr7/algorithms/sdssUBVRITransform.html)
+
+        U-B   =     (0.79 ± 0.02)*(u-g)    - (0.93 ± 0.02)
+        U-B   =     (0.52 ± 0.06)*(u-g)    + (0.53 ± 0.09)*(g-r) - (0.82 ± 0.04)
+        B-g   =     (0.175 ± 0.002)*(u-g)  + (0.150 ± 0.003)
+        B-g   =     (0.313 ± 0.003)*(g-r)  + (0.219 ± 0.002)
+        V-g   =     (-0.565 ± 0.001)*(g-r) - (0.016 ± 0.001)
+        V-I   =     (0.675 ± 0.002)*(g-i)  + (0.364 ± 0.002) if  g-i <= 2.1
+        V-I   =     (1.11 ± 0.02)*(g-i)    - (0.52 ± 0.05)   if  g-i >  2.1
+        R-r   =     (-0.153 ± 0.003)*(r-i) - (0.117 ± 0.003)
+        R-I   =     (0.930 ± 0.005)*(r-i)  + (0.259 ± 0.002)
+        I-i   =     (-0.386 ± 0.004)*(i-z) - (0.397 ± 0.001)
+
+        Although I do not see how to reproduce these transformations from the
+        actualy Jordi et al. (2006) publication, I will temporarily *trust* the
+        SDSS website. and use the `R-r = cc*(r-i) + zp` equation.
+        """
+        # Grab the Sloan r' and i' magnitudes
+        i    = apassPhotTable['i_mag']
+        e_i  = apassPhotTable['e_i_mag']
+        r    = apassPhotTable['r_mag']
+        e_r  = apassPhotTable['e_r_mag']
+        ri   = r - i
+        e_ri = np.sqrt(e_r**2 + e_i**2)
+
+        # Compute the Cousns-R magnitude
+        R = r - 0.153*ri - 0.117
+
+        # Compute the uncertainty in the R-band magnitude
+        v_colorTerm   = ((0.003/0.153)**2 + (e_ri/ri)**2)
+        e_R           = np.sqrt(e_r**2 + v_colorTerm)
+
+        return R, e_R
+
+    @staticmethod
     def _APASS_gr_to_R(apassPhotTable):
         """
         Computes the photometric transformation from SDSS g', r' to Johnson-R
@@ -273,8 +313,14 @@ class PhotometryCalibrator(object):
         # seem to be working at all.
         # R, e_R = cls._APASS_Vgr_to_R(apassPhotTable)
 
-        # NOTE: Use this (personally computed) transformation instead
-        R, e_R = cls._APASS_gr_to_R(apassPhotTable)
+        # # NOTE: Use this (personally computed) transformation instead?
+        # This also did not seem to work
+        # R, e_R = cls._APASS_gr_to_R(apassPhotTable)
+        # outputTable['R']   = R
+        # outputTable['e_R'] = e_R
+
+        # NOTE: Finally, try the transformation listed on the SDSS website
+        R, e_R = cls._APASS_ri_to_R(apassPhotTable)
         outputTable['R']   = R
         outputTable['e_R'] = e_R
 
