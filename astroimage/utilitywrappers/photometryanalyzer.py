@@ -327,13 +327,13 @@ class PhotometryAnalyzer(object):
 
         return (medianPSF, PSFparams)
 
-    def get_COG_stars(self, fluxLimits=(5e2,16e3)):
+    def get_COG_stars(self, fluxLimits):
         """
         Finds the location of stars good for building a curve-of-growth (COG)
 
         Parameters
         ----------
-        fluxLimits : tuple, default: (1e3, 16e3)
+        fluxLimits : tuple
             Only sources with maximum pixels values between these limits will be
             selected as candidate stars from which to build a curve-of-growth
 
