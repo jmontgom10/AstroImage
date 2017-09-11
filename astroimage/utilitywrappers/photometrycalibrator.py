@@ -493,10 +493,12 @@ class PhotometryCalibrator(object):
             raise ValueError('`imageDict` must contain at least one image')
 
         # Briefly dissociate the images from the keys for image alignment
-        imageKeys = []
-        imageList = []
+        imageKeys   = []
+        expTimeList = []
+        imageList   = []
         for key, value in imageDict.items():
             imageKeys.append(key)
+            expTimeList.append(value.expTime)
             imageList.append(value.divide_by_expTime())
 
         # Construct an ImageStack instance to test alignment
