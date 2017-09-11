@@ -507,17 +507,16 @@ class PhotometryCalibrator(object):
             print('Performing necessary image alignment')
             imageStack.align_images_with_cross_correlation()
 
-        # Reconstruct the image dictionary
-        imageDict1 = dict(zip(imageKeys, imageStack.imageList))
+        # Reconstruct the image dictionary and exposure time dict
+        expTimeDict = dict(zip(imageKeys, expTimeList))
+        imageDict1  = dict(zip(imageKeys, imageStack.imageList))
 
         # Construct the necessary star masks for later use
         starMaskList = imageStack._produce_individual_star_masks()
         starMaskDict = dict(zip(imageKeys, starMaskList))
 
-        # Grab the wavelengths available for calibration.
-        availableWavebands = self.__class__.zeroFlux.keys()
-
         # Get wavelength sorted arrays of wavebands and wavelengths
+        availableWavebands = np.array(self.__class__.wavelength.keys())
         wavebands   = []
         wavelengths = []
         for waveband in imageDict1.keys():
