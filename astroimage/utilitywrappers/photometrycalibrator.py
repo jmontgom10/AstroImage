@@ -498,7 +498,7 @@ class PhotometryCalibrator(object):
         imageList   = []
         for key, value in imageDict.items():
             imageKeys.append(key)
-            expTimeList.append(value.expTime)
+            expTimeList.append((value.expTime/value.unit).value)
             imageList.append(value.divide_by_expTime())
 
         # Construct an ImageStack instance to test alignment
@@ -515,8 +515,10 @@ class PhotometryCalibrator(object):
         starMaskList = imageStack._produce_individual_star_masks()
         starMaskDict = dict(zip(imageKeys, starMaskList))
 
+        # Grab the wavelengths available for calibration.
+        availableWavebands = self.__class__.zeroFlux.keys()
+
         # Get wavelength sorted arrays of wavebands and wavelengths
-        availableWavebands = np.array(self.__class__.wavelength.keys())
         wavebands   = []
         wavelengths = []
         for waveband in imageDict1.keys():
@@ -539,6 +541,7 @@ class PhotometryCalibrator(object):
 
         # Store the sorted versions of the wavelengths for later use
         self.imageDict    = imageDict1
+        self.expTimeDict  = expTimeDict
         self.starMaskDict = starMaskDict
         self.wavebands    = wavebands
         self.wavelengths  = wavelengths
@@ -664,7 +667,8 @@ class PhotometryCalibrator(object):
             starAprs = photAnalyzer.get_maximum_SNR_apertures(xs, ys)
 
             # Compute the curve of growth parameters for this image
-            xCOG, yCOG = photAnalyzer.get_COG_stars()
+            fluxLimits = np.array([5e2, 16e3])/self.expTimeDict[waveband]
+            xCOG, yCOG = photAnalyzer.get_COG_stars(fluxLimits)
             kingParams = photAnalyzer.get_curve_of_growth(xCOG, yCOG)
 
             # TODO: Determine some much better radius to use for aperture photometry
@@ -732,12 +736,6 @@ class PhotometryCalibrator(object):
                 instrumentalMagUncerts = 2.5*fluxUncerts/(instrumentalFluxes*np.log(10))
             else:
                 instrumentalMagUncerts = None
-
-            # Mask any instrumental magnitudes with uncertainties greater than 0.1
-            maskedRows = np.logical_or(
-                maskedRows,
-                instrumentalMagUncerts > 0.1
-            )
 
             # Compute the amount of aperture correction for the used starApertures
             # NOTE: Assume that aperture correction introduces zero uncertainty
