@@ -248,12 +248,33 @@ class PhotometryCalibrator(object):
         ri   = r - i
         e_ri = np.sqrt(e_r**2 + e_i**2)
 
-        # Compute the Cousns-R magnitude
-        R = r - 0.153*ri - 0.117
+        # Define the terms of the photometric transformation
+        slope        = -0.153
+        e_slope      = 0.003
+        intercept    = -0.117
+        e_intercept  = 0.003
+
+        # Compute the Coussins-R magnitude
+        R = np.array(r + slope*ri + intercept)
 
         # Compute the uncertainty in the R-band magnitude
-        v_colorTerm   = ((0.003/0.153)**2 + (e_ri/ri)**2)
-        e_R           = np.sqrt(e_r**2 + v_colorTerm)
+        # v_colorTerm   = ((0.003/0.153)**2 + (e_ri/ri)**2)
+        # e_R           = np.sqrt(e_r**2 + v_colorTerm)
+
+        # Monte-Carlo error propagation
+        mc_r = np.array(
+            [e_ri*np.random.randn(10000) + ri for ri, e_ri in zip(r, e_r)]
+        )
+        mc_i = np.array(
+            [e_ii*np.random.randn(10000) + ii for ii, e_ii in zip(i, e_i)]
+        )
+        mc_slope     = e_slope*np.random.randn(mc_r.size).reshape(mc_r.shape) + slope
+        mc_intercept = e_intercept*np.random.randn(mc_r.size).reshape(mc_r.shape) + intercept
+        mc_ri        = mc_r - mc_i
+        mc_R         = mc_r + mc_slope*mc_ri + mc_intercept
+
+        # Get the uncertainty from the MC error propagation
+        e_R = mc_R.std(1)
 
         return R, e_R
 
