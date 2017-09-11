@@ -16,6 +16,7 @@ from astropy import units as u
 from photutils import (DAOStarFinder, data_properties,
     CircularAperture, CircularAnnulus, aperture_photometry)
 from astroquery.vizier import Vizier
+from astropy.stats import sigma_clip
 
 # AstroImage imports
 from ..reduced import ReducedScience
@@ -389,13 +390,22 @@ class PhotometryCalibrator(object):
     @staticmethod
     def _repairMagnitudePairDictUncertainties(magnitudePairDict):
         """
-        Ensures that no catalog magnitudes have *zero* uncertainty
+        Makes sure the magnitudePairDict passes a set of `sanity tests`
+
+        (1) No *zero* uncertainty APASS magnitudes: forces zero-uncertainty
+        entries to have a some minimum value
+        (2) No instrumental uncertainties greater than 0.1 magnitude
+        (3) No outlier (m_inst - m_catalog) values: culls any such outliers
         """
         # Make a copy to return to the user
         outputMagnitudePairDict = magnitudePairDict.copy()
 
         # Ensure that there are not a bunch of "zero uncertainty" entries
+        maskedRows = False
         for waveband in magnitudePairDict.keys():
+            #####
+            # (1) Fix any *zero* uncertainty catalog magnitudes
+            #####
             # Grab the uncertainty values for this waveband
             wavebandUncert = magnitudePairDict[waveband]['catalog']['uncertainty']
 
@@ -416,6 +426,47 @@ class PhotometryCalibrator(object):
 
             # Replace the uncertainty column with its repaired value
             outputMagnitudePairDict[waveband]['catalog']['uncertainty'] = wavebandUncert
+
+            #####
+            # (2) Mask any instrumental mags with uncertainties greater than 0.1
+            #####
+            instrumentalMagUncerts = magnitudePairDict[waveband]['instrument']['uncertainty']
+            maskedRows = np.logical_or(
+                maskedRows,
+                instrumentalMagUncerts > 0.1
+            )
+
+            #####
+            # (3) Catch any outliers from the main zero-point value
+            #####
+            magDifferences = (
+                outputMagnitudePairDict[waveband]['catalog']['data'] -
+                outputMagnitudePairDict[waveband]['instrument']['data']
+            )
+            maskedRows = np.logical_or(
+                maskedRows,
+                sigma_clip(magDifferences).mask
+            )
+
+        # Loop back through and remove any masked rows
+        for waveband in magnitudePairDict.keys():
+            # Grab the good rows and keep only them
+            goodRowInds = np.where(np.logical_not(maskedRows))
+
+            # Replace each entry with its own data, sans the masked rows
+            wavebandMagDict = {
+                'catalog': {
+                    'data': magnitudePairDict[waveband]['catalog']['data'][goodRowInds],
+                    'uncertainty': magnitudePairDict[waveband]['catalog']['uncertainty'][goodRowInds],
+                },
+                'instrument': {
+                    'data': magnitudePairDict[waveband]['instrument']['data'][goodRowInds],
+                    'uncertainty': magnitudePairDict[waveband]['instrument']['uncertainty'][goodRowInds]
+                }
+            }
+
+            # Restore this data in the magnitudePairDict
+            outputMagnitudePairDict[waveband] = wavebandMagDict
 
         return outputMagnitudePairDict
 
