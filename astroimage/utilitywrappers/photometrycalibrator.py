@@ -1033,6 +1033,34 @@ class PhotometryCalibrator(object):
             # Run the regression
             colorRegression = colorODR.run()
 
+            # # Plot *all* the debugging images
+            # import matplotlib.pyplot as plt
+            # plt.ion()
+            # plt.figure()
+            # plt.errorbar(
+            #     wavebandData1.x, wavebandData1.y,
+            #     xerr=wavebandData1.sx, yerr=wavebandData1.sy,
+            #     linestyle='none'
+            # )
+            # plt.plot(wavebandData1.x, linearFunc(wavebandRegression1.beta, wavebandData1.x))
+            #
+            # plt.figure()
+            # plt.errorbar(
+            #     wavebandData2.x, wavebandData2.y,
+            #     xerr=wavebandData2.sx, yerr=wavebandData2.sy,
+            #     linestyle='none'
+            # )
+            # plt.plot(wavebandData2.x, linearFunc(wavebandRegression2.beta, wavebandData2.x))
+            #
+            # plt.figure()
+            # plt.errorbar(
+            #     colorData.x, colorData.y,
+            #     xerr=colorData.sx, yerr=colorData.sy,
+            #     linestyle='none'
+            # )
+            # plt.plot(colorData.x, linearFunc(colorRegression.beta, colorData.x))
+            # import pdb; pdb.set_trace()
+
             # Compute the instrumental color image
             instColor = -2.5*np.log10(fluxRatio)
 
