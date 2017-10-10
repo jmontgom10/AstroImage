@@ -383,8 +383,8 @@ class ResizingMixin(object):
 
             # Computed weighted rebinning
             nanMask   = np.isfinite(self.data).astype(float)
-            rebinData = np.nansum(np.nansum(self.data.reshape(sh), axis=-1), axis=1)
-            numInSum  = np.sum(np.sum(nanMask.reshape(sh), axis=-1), axis=1)
+            rebinData = np.nansum(np.nansum(self.data.reshape(sh), axis=-1), axis=1).astype(float)
+            numInSum  = np.sum(np.sum(nanMask.reshape(sh), axis=-1), axis=1).astype(float)
 
             # Only consider a rebinned pixel valid if *at least* 75% of the
             # constituent pixels were finite
