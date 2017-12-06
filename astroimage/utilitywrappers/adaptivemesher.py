@@ -60,7 +60,18 @@ class AdaptiveMesher(object):
         Example format:
 
         def copyData(destImg, sourceImg, inds):
-            img1.data[inds] = img2.data[inds]
+            destImg.data[inds] = sourceImg.data[inds]
+
+    dataExtractor: `function`, optional, default: None
+        A user defined funciton which takes an input object and a set of indices
+        and extracts the data from the input object at those indices. This is
+        used to pull out the individual (unmapped) values produced by the AMR
+        routine
+
+        Example format:
+
+        def extractData(sourceImg, inds):
+            return img.data[inds]
 
     Methods
     -------
@@ -112,7 +123,8 @@ class AdaptiveMesher(object):
     >>> PA.show(vmin=0, vmax=180, cmap='rainbow')
     """
 
-    def __init__(self, inputObject, binningStatistic, upbinFunction, dataCopier):
+    def __init__(self, inputObject, binningStatistic, upbinFunction, dataCopier,
+        dataExtractor=None):
         """Builds the AdaptiveMesher object."""
         # Test if the input object has a __getitem__ method defined
         if not hasattr(inputObject, '__getitem__'):
@@ -133,6 +145,10 @@ class AdaptiveMesher(object):
 
         # Store the cdataCpier function
         self.__dataCopier = dataCopier
+
+        # Store the cdataCpier function
+        self.__dataExtractor = dataExtractor
+
 
     @property
     def data(self):
@@ -306,7 +322,7 @@ class AdaptiveMesher(object):
 
         # Loop through each binning level and copy over the data to the final
         # output object
-        for rebin in self.rebinLevels[1:]:
+        for rebin in self.rebinLevels:
             # Up-bin the data to its original shape
             tmpData = self._AdaptiveMesher__upbinFunction(
                 self.rebinnedData[rebin], rebin
@@ -325,6 +341,31 @@ class AdaptiveMesher(object):
 
         # Store the final, rebinned output data
         self.adaptiveMeshedData = adaptiveMeshedData
+
+        # If a data extractor was defined, then apply that function here...
+        if self._AdaptiveMesher__dataExtractor is not None:
+            # Repeat the process to extract out individual values at each
+            # rebin level instead of copying data over into a map.
+            extractedDataDict = {}
+
+            for rebin in self.rebinLevels:
+                # Start by grabbing the binned version of the data
+                tmpData     = self.rebinnedData[rebin]
+                thisRebin   = (self.amrBinnings[::rebin, ::rebin] == rebin)
+                extractInds = np.where(thisRebin)
+
+                # Now actually retrieve the data using the provided function
+                extractedData = self._AdaptiveMesher__dataExtractor(
+                    tmpData,
+                    extractInds
+                )
+
+                # Store the extracted data in a dictionary using the rebin level
+                # as the keys to the dictionary
+                extractedDataDict[rebin] = extractedData
+
+            # Store the final, extracted data in an accesible attribute
+            self.extractedData = extractedDataDict
 
     def run(self, thresholdValue, maxRebins=3):
         """
@@ -392,6 +433,12 @@ class AdaptiveMesher(object):
         -------
         outArray : numpy.ndarray
             The adaptive mesh rebinned version of the input array
+
+        extractedDataDict : dict
+            A dictionary containing all of the extracted values from this array.
+            The keys of the dictionary contain the rebin level from which each
+            value was extracted, and the values contain arrays of the rebinned
+            data.
         """
         # Test if amrBinning has already been produced
         if not hasattr(self, 'amrBinnings'):
@@ -405,9 +452,10 @@ class AdaptiveMesher(object):
 
         # Loop through each binning level and compute the AMR outArray
         outArray = inArray.copy()
+        extractedDataDict = {}
         for rebinLevel in np.unique(self.amrBinnings).astype(int):
             # Skip over the trivial versions
-            if rebinLevel <= 1: continue
+            if rebinLevel < 1: continue
 
             # Compute the rebinning shape for this level
             sh = (
@@ -419,13 +467,21 @@ class AdaptiveMesher(object):
             # First down-sample...
             tmpArray = np.nansum(np.nansum(inArray.reshape(sh), axis=-1), axis=1)
 
-            # then up-sample
-            tmpArray = np.kron(tmpArray, np.ones((rebinLevel, rebinLevel)))
+            # Divide by the number of pixels summed at this binning level
+            numPix   = np.sum(np.sum(finitePix.reshape(sh), axis=-1), axis=1)
+            tmpArray = tmpArray/numPix
 
-            # Divide by
+            # At this point, grab the pixels to be extracted for this rebinning
+            thisRebin     = (self.amrBinnings[::rebinLevel, ::rebinLevel] == rebinLevel)
+            extractInds   = np.where(thisRebin)
+            extractedData = tmpArray[extractInds]
+            extractedDataDict[rebinLevel] = extractedData
+
+            # Now that the data has been extracted, it is safe to up-sample
+            tmpArray = np.kron(tmpArray, np.ones((rebinLevel, rebinLevel)))
 
             # Replace the corresponding indices with these rebinned values
             copyInds = np.where(self.amrBinnings == rebinLevel)
             outArray[copyInds] = tmpArray[copyInds]
 
-        return outArray
+        return outArray, extractedDataDict
