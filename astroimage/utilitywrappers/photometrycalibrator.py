@@ -82,7 +82,7 @@ class PhotometryCalibrator(object):
     -----------------------
     APASS: Henden & Munari (2014)
         http://adsabs.harvard.edu/abs/2014CoSka..43..518H
-    2MASS: Skrutskie et al. (2006
+    2MASS: Skrutskie et al. (2006)
         http://adsabs.harvard.edu/abs/2006AJ....131.1163S
     """
 
