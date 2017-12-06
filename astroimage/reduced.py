@@ -1132,57 +1132,90 @@ class ReducedScience(ResizingMixin, NumericsMixin, ReducedImage):
     ###
     # TODO: Think through whether or not (and HOW) to implement a rotation method
     ###
-    # def rotate(self, angle, reshape=True, order=3, mode='constant', cval=0.0,
-    #     prefilter=True, copy=True):
-    #     """This is a convenience method for accessing the scipy rotate
-    #     interpolator. Future versions of this method may apply a flux
-    #     conservative method (such as that apparently employed by HASTROM in
-    #     the IDL astrolib).
-    #     """
-    #     # Apply the rotation to the array and sigma arrays
-    #     outArr = ndimage.interpolation.rotate(self.arr, angle,
-    #         reshape=reshape, order=order, mode=mode, cval=cval,
-    #         prefilter=prefilter)
-    #
-    #     # I have not yet sorted out how to properly apply rotation to the
-    #     # WCS information in the header
-    #     warnings.warn('The WCS of this image has not been rotated', Warning)
-    #
-    #     # If the shape of the output array has changed, then update the header
-    #     ny, nx = outArr.shape
-    #     if (ny, nx) != self.arr.shape:
-    #         outHead = self.header.copy()
-    #         outHead['NAXIS1'] = nx
-    #         outHead['NAXIS2'] = ny
-    #
-    #     # Rotate the uncertainty image if it exists (THIS IS PROBABLY NOT THE
-    #     # PROPER WAY TO HANDLE ROTATION)
-    #     hasSig = hasattr(self, 'sigma')
-    #     if hasSig:
-    #         outSig = ndimage.interpolation.rotate(self.sigma, angle,
-    #             reshape=reshape, order=order, mode=mode, cval=cval,
-    #             prefilter=prefilter)
-    #
-    #     # Either copy and return the image, or store it in "self"
-    #     if copy == True:
-    #         outImg = self.copy()
-    #         outImg.arr    = outArr
-    #
-    #         if hasSig:
-    #             outImg.sigma  = outSig
-    #
-    #         outImg.header = outHead
-    #         outImg.wcs    = WCS(outHead)
-    #
-    #         return outImg
-    #     else:
-    #         self.arr    = outarr
-    #
-    #         if hasSig:
-    #             self.sigma  = outSig
-    #
-    #         self.header = outHead
-    #         self.wcs    = WCS(outHead)
+    def rotate(self, angle, reshape=True, order=3, mode='constant', cval=0.0,
+        prefilter=True):
+        """
+        Rotates the image and returns a rotated version of the image
+
+        This is effectively a convenience method for accessing the scipy rotate
+        interpolator. Future versions of this method may apply a flux
+        conservative method (such as that apparently employed by HROT and
+        HASTROM in the IDL astrolib).
+        """
+        # Make a copy of the image to return to the user
+        outImg = self.copy()
+
+        # Apply the rotation to the data array and store it in the output image
+        rotData = ndimage.interpolation.rotate(self.data, angle,
+            reshape=reshape, order=order, mode=mode, cval=cval,
+            prefilter=prefilter)
+
+        # Issue a warning that the flux has not been carefully conserved
+        warnings.warn('The flux of this image has not been conserved', Warning)
+
+        # Rotate the WCS, if it exists, and store it
+        if self.has_wcs:
+            # Make a copy of the WCS for output
+            rotWCS = copy.deepcopy(self.wcs)
+
+            # Compute the radion equivalent of the rotation angle
+            radAngle    = +np.deg2rad(angle)
+            negRadAngle = -np.deg2rad(angle)
+
+            # Construct the rotation matrix for this angle
+            rotMatrix = np.matrix(
+                [[+np.cos(radAngle), -np.sin(radAngle)],
+                 [+np.sin(radAngle), +np.cos(radAngle)]]
+            )
+            negRotMatrix = np.matrix(
+                [[+np.cos(negRadAngle), -np.sin(negRadAngle)],
+                 [+np.sin(negRadAngle), +np.cos(negRadAngle)]]
+            )
+
+            # Compute the rotated CD matrix
+            newCD = negRotMatrix.dot(np.matrix(rotWCS.wcs.cd)).A
+
+            # Store this in the outImg WCS
+            rotWCS.wcs.cd = newCD
+
+            # Now handle any offset introduced by the 'reshaping' of the array
+            if reshape:
+                # Compute the locations of the old and new image centers
+                oldCenter = (np.array(self.shape[:2][::-1])-1)/2.
+                newCenter = (np.array(rotData.shape[:2][::-1])-1)/2.
+
+                # Compute
+                oldCRPIX  = self.wcs.wcs.crpix
+                newCRPIX  = negRotMatrix.dot((oldCRPIX - oldCenter )) + newCenter
+
+                # Add the offset value to the rotated WCS
+                rotWCS.wcs.crpix = newCRPIX.A.flatten()
+        else:
+            rotWCS = None
+
+        # Rotate the uncertainty image, if it exists, and store it
+        if self.has_uncertainty:
+            rotUncert = np.sqrt(
+                ndimage.interpolation.rotate(self.uncertainty**2, angle,
+                    reshape=reshape, order=order, mode=mode, cval=cval,
+                    prefilter=prefilter)
+            )
+            rotUncert = StdDevUncertainty(rotUncert)
+        else:
+            rotUncert = None
+
+        # Construct an outgoing image and use the rotated data but the original
+        outImg._BaseImage__fullData = NDDataArray(
+            rotData,
+            uncertainty=rotUncert,
+            unit=self.unit,
+            wcs=rotWCS
+        )
+
+        # Also force the new astrometry into the image header before returning
+        outImg.astrometry_to_header(rotWCS)
+
+        return outImg
 
     # def scale(self, quantity='flux', copy=False):
     #     """
