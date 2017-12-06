@@ -962,6 +962,11 @@ class ReducedScience(ResizingMixin, NumericsMixin, ReducedImage):
         padding : scalar, optional, default: 0.0
             The value to place in the empty regions after the image has been
             shifted
+
+        Returns
+        -------
+        outImg : astroimage
+            The shifted version of the image
         """
 
         # TODO
