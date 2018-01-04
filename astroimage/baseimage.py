@@ -1491,28 +1491,28 @@ instrument (e.g., `prism` or `mimir`).
             if type(datetimeStr) is not str:
                 raise TypeError('`datetime` property must be a string')
 
-            # Split the datetime string into HH:MM:SS
-            splitDatetimeStr = datetimeStr.split(':')
+            # Try a few string formats for the date
+            stringFormats = [
+                '%Y-%m-%dT%H:%M:%S.%f',
+                '%Y-%m-%dT%H:%M:%S'
+                '%Y-%m-%d.%f',
+                '%Y-%m-%d'
+            ]
+            for stringFormat in stringFormats:
+                try:
+                    self.__datetime = datetime.strptime(
+                        datetimeStr,
+                        stringFormat
+                    )
+                    success = True
+                except:
+                    success = False
 
-            # Grab the seconds part of the datetime string
-            secondStr = splitDatetimeStr[-1]
+                # Break out of the loop if this format worked
+                if success: break
+            else:
+                raise Exception('Could not parse the datestring: {}'.format(datetimeStr))
 
-            # If there are no miliseconds, add ".000" miliseconds.
-            if '.' not in secondStr:
-                # Append a milisecond string component
-                secondStr += '.000'
-
-                # Replace the last element of the datetime string
-                splitDatetimeStr[-1] = secondStr
-
-                # Recombine the elements of the datetime string
-                datetimeStr  = ':'.join(splitDatetimeStr)
-
-            # Convert datetime string into a datetime object
-            self.__datetime = datetime.strptime(
-                datetimeStr,
-                '%Y-%m-%dT%H:%M:%S.%f'
-            )
         else:
             # Set the current date-time as the date value
             nowDatetime = datetime.utcnow()
