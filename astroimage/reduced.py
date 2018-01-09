@@ -32,7 +32,7 @@ import matplotlib.pyplot as plt
 
 # AstroImage imports
 from .baseimage import BaseImage, ClassProperty
-from .mixins import NumericsMixin, ResizingMixin
+from .mixins import NumericsMixin, ResizingMixin, ImageProcessingMixin
 
 # Define which functions, classes, objects, etc... will be imported via the command
 # >>> from .reducedimage import *
@@ -362,7 +362,7 @@ class MasterFlat(ReducedImage):
                 self.obsType
             ))
 
-class ReducedScience(ResizingMixin, NumericsMixin, ReducedImage):
+class ReducedScience(ResizingMixin, NumericsMixin, ImageProcessingMixin, ReducedImage):
     """
     A class for handling fully reduced science frames.
 
