@@ -16,3 +16,4 @@ ResizingMixin    Provides the cropping, slicing, and rebinning functionality
 # subpackage.
 from .numericsmixin import NumericsMixin
 from .resizingmixin import ResizingMixin
+from .imageprocessingmixin import ImageProcessingMixin
