@@ -1494,11 +1494,7 @@ instrument (e.g., `prism` or `mimir`).
             # Try a few string formats for the date
             stringFormats = [
                 '%Y-%m-%dT%H:%M:%S.%f',
-<<<<<<< HEAD
                 '%Y-%m-%dT%H:%M:%S',
-=======
-                '%Y-%m-%dT%H:%M:%S'
->>>>>>> c1c5ab76ab98b279663b79ce7aa0b5fbb6cc1532
                 '%Y-%m-%d.%f',
                 '%Y-%m-%d'
             ]
